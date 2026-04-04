@@ -30,7 +30,9 @@ run: img $(DISK)
 		-drive file=$(DISK),format=raw,if=none,id=data -device ide-hd,drive=data,bus=ide.0 \
 		-m 256 -smp 1 -net none \
 		-display cocoa,zoom-to-fit=on \
-		-vga none -device ramfb
+		-vga none -device ramfb \
+		-machine pcspk-audiodev=snd \
+		-audiodev coreaudio,id=snd
 
 clean:
 	cargo clean

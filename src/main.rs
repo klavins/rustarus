@@ -27,6 +27,7 @@ mod fs;
 pub mod graphics;
 mod interrupts;
 mod io;
+pub mod speaker;
 
 use cell::StaticCell;
 use console::{Color, Console};

@@ -242,6 +242,7 @@ impl BasicState {
             TokenKind::Pos => self.exec_pos(tl, start + 1),
             TokenKind::TextCmd => self.exec_text(tl, start + 1),
             TokenKind::Show => { Self::gfx().present(); Ok(()) }
+            TokenKind::Sound => self.exec_sound(tl, start + 1),
             TokenKind::Ident if tl.get(start + 1).kind == TokenKind::Eq => {
                 self.exec_let(tl, start)
             }
@@ -614,6 +615,35 @@ impl BasicState {
             let mut buf = [0u8; 32];
             let len = super::value::format_f64(val, &mut buf);
             Self::gfx().text(&buf[..len]);
+        }
+        Ok(())
+    }
+
+    fn exec_sound(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
+        // SOUND voice, pitch, distortion, volume
+        let mut parser = Parser::new(tl, start, &mut self.vars);
+        let _voice = parser.parse_expr()?;
+        let mut pos = parser.pos;
+        if tl.get(pos).kind == TokenKind::Comma { pos += 1; }
+
+        let mut parser = Parser::new(tl, pos, &mut self.vars);
+        let pitch = parser.parse_expr()? as u8;
+        pos = parser.pos;
+        if tl.get(pos).kind == TokenKind::Comma { pos += 1; }
+
+        let mut parser = Parser::new(tl, pos, &mut self.vars);
+        let _distortion = parser.parse_expr()?;
+        pos = parser.pos;
+        if tl.get(pos).kind == TokenKind::Comma { pos += 1; }
+
+        let mut parser = Parser::new(tl, pos, &mut self.vars);
+        let volume = parser.parse_expr()? as i32;
+
+        if volume == 0 {
+            crate::speaker::speaker_off();
+        } else {
+            let freq = crate::speaker::atari_pitch_to_hz(pitch);
+            crate::speaker::speaker_on(freq);
         }
         Ok(())
     }
