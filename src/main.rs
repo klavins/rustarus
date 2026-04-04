@@ -22,32 +22,30 @@ mod console;
 mod font;
 mod interrupts;
 
-use console::Console;
+use console::{Color, Console, ConsoleCell};
 use core::arch::asm;
-use spin::Mutex;
+use uefi::mem::memory_map::MemoryMap;
 use uefi::prelude::*;
 use uefi::proto::console::gop::GraphicsOutput;
 
-/// Global console behind a spin lock.
-static CONSOLE: Mutex<Console> = Mutex::new(Console::new());
+static CONSOLE: ConsoleCell = ConsoleCell::new(Console::new());
 
-/// Shadow buffer at a fixed address in conventional memory above 32 MB.
-const SHADOW_BUF_ADDR: usize = 0x0200_0000;
+#[inline(always)]
+fn halt() -> ! {
+    loop {
+        unsafe { asm!("hlt") };
+    }
+}
 
 #[entry]
 fn main() -> Status {
-    // Locate GOP — find the handle that owns the protocol first
     let gop_handle = match uefi::boot::get_handle_for_protocol::<GraphicsOutput>() {
         Ok(h) => h,
-        Err(_) => loop {
-            unsafe { asm!("hlt") };
-        },
+        Err(_) => halt(),
     };
     let mut gop = match uefi::boot::open_protocol_exclusive::<GraphicsOutput>(gop_handle) {
         Ok(g) => g,
-        Err(_) => loop {
-            unsafe { asm!("hlt") };
-        },
+        Err(_) => halt(),
     };
 
     // Find best mode (max resolution capped at 1920x1200)
@@ -69,49 +67,75 @@ fn main() -> Status {
         let _ = gop.set_mode(&mode);
     }
 
-    // Read framebuffer info before exiting boot services
     let mode_info = gop.current_mode_info();
     let (width, height) = mode_info.resolution();
     let stride = mode_info.stride();
     let fb_base = gop.frame_buffer().as_mut_ptr();
     let pitch = stride * 4;
+    let fb_size = pitch * height;
 
     drop(gop);
 
-    let _ = unsafe { uefi::boot::exit_boot_services(None) };
+    let mmap = unsafe { uefi::boot::exit_boot_services(None) };
 
-    let shadow = SHADOW_BUF_ADDR as *mut u8;
+    // Find a free conventional memory region for the shadow buffer
+    let fb_start = fb_base as u64;
+    let fb_end = fb_start + fb_size as u64;
+    let mut best_base: u64 = 0;
+    let mut best_size: u64 = 0;
 
-    {
-        let mut con = CONSOLE.lock();
-        con.init(fb_base, shadow, width as u32, height as u32, pitch as u32);
-        con.set_color(2, 0);
-        con.print(" UEFI Boot\n");
-        con.set_color(11, 0);
-        con.print(" Display: ");
-        print_u32_locked(&mut con, width as u32);
-        con.print("x");
-        print_u32_locked(&mut con, height as u32);
-        con.print("\n");
+    for desc in mmap.entries() {
+        if desc.ty != uefi::mem::memory_map::MemoryType::CONVENTIONAL {
+            continue;
+        }
+        let base = desc.phys_start;
+        let size = desc.page_count * 4096;
+        if base < 0x10_0000 || base >= 0x1_0000_0000 {
+            continue;
+        }
+        let end = base + size;
+        if base < fb_end && end > fb_start {
+            continue;
+        }
+        if size < fb_size as u64 {
+            continue;
+        }
+        if size > best_size {
+            best_base = base;
+            best_size = size;
+        }
     }
+
+    if best_base == 0 {
+        halt();
+    }
+
+    let shadow = best_base as *mut u8;
+
+    let con = unsafe { CONSOLE.get() };
+    con.init(fb_base, shadow, width as u32, height as u32, pitch as u32);
+
+    con.set_color(Color::Green, Color::Black);
+    con.print(" UEFI Boot\n");
+    con.set_color(Color::LightCyan, Color::Black);
+    con.print(" Display: ");
+    print_u32(con, width as u32);
+    con.print("x");
+    print_u32(con, height as u32);
+    con.print("\n");
 
     unsafe { interrupts::init() };
 
-    {
-        let mut con = CONSOLE.lock();
-        con.set_color(7, 0);
-        con.print(" RUSTARUS OS v1\n");
-        con.set_color(15, 0);
-        con.print(" > ");
-    }
+    con.set_color(Color::LightGray, Color::Black);
+    con.print(" RUSTARUS OS v1\n");
+    con.set_color(Color::White, Color::Black);
+    con.print(" > ");
 
-    // Prompt loop
     let mut line = [0u8; 80];
     let mut pos = 0usize;
 
     loop {
         let c = interrupts::keybuf_read_blocking() as u8;
-        let mut con = CONSOLE.lock();
 
         if c == b'\n' {
             con.putchar(b'\n');
@@ -137,7 +161,7 @@ fn main() -> Status {
     }
 }
 
-fn print_u32_locked(con: &mut Console, mut n: u32) {
+fn print_u32(con: &mut Console, mut n: u32) {
     if n == 0 {
         con.putchar(b'0');
         return;
@@ -157,18 +181,14 @@ fn print_u32_locked(con: &mut Console, mut n: u32) {
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    // Try to acquire the lock (may deadlock if panic inside locked section)
-    if let Some(mut con) = CONSOLE.try_lock() {
-        con.set_color(12, 0);
-        con.print("\nPANIC: ");
-        if let Some(loc) = info.location() {
-            con.print(loc.file());
-            con.print(":");
-            print_u32_locked(&mut con, loc.line());
-        }
-        con.print("\n");
+    let con = unsafe { CONSOLE.get() };
+    con.set_color(Color::LightRed, Color::Black);
+    con.print("\nPANIC: ");
+    if let Some(loc) = info.location() {
+        con.print(loc.file());
+        con.print(":");
+        print_u32(con, loc.line());
     }
-    loop {
-        unsafe { asm!("hlt") };
-    }
+    con.print("\n");
+    halt();
 }

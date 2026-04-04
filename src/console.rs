@@ -16,10 +16,34 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::font::FONT_8X16;
+use core::cell::UnsafeCell;
 use core::ptr;
 
-const FONT_W: usize = 8;
-const FONT_H: usize = 16;
+const FONT_W: u32 = 8;
+const FONT_H: u32 = 16;
+
+/// VGA 16-color palette.
+#[derive(Copy, Clone)]
+#[repr(u8)]
+#[allow(dead_code)]
+pub enum Color {
+    Black = 0,
+    Blue = 1,
+    Green = 2,
+    Cyan = 3,
+    Red = 4,
+    Magenta = 5,
+    Brown = 6,
+    LightGray = 7,
+    DarkGray = 8,
+    LightBlue = 9,
+    LightGreen = 10,
+    LightCyan = 11,
+    LightRed = 12,
+    LightMagenta = 13,
+    Yellow = 14,
+    White = 15,
+}
 
 /// 32-bit BGRA colors matching VGA 16-color palette
 const COLOR32_MAP: [u32; 16] = [
@@ -41,13 +65,33 @@ const COLOR32_MAP: [u32; 16] = [
     0x00FFFFFF, // white
 ];
 
-// Safety: Console is only used from a single CPU core (no SMP),
-// and the Mutex ensures exclusive access.
+/// Single-core wrapper for Console — no locking, just satisfies Rust's
+/// static Sync requirement. The panic handler can always access it.
+pub struct ConsoleCell(UnsafeCell<Console>);
+
+// Safety: single-core, no SMP. Only one execution context accesses the
+// console at a time (main loop or interrupt handler, never both writing).
+unsafe impl Sync for ConsoleCell {}
+
+impl ConsoleCell {
+    pub const fn new(console: Console) -> Self {
+        Self(UnsafeCell::new(console))
+    }
+
+    /// Get a mutable reference to the console.
+    /// Safety: caller must ensure no concurrent access.
+    pub unsafe fn get(&self) -> &mut Console {
+        unsafe { &mut *self.0.get() }
+    }
+}
+
+// Safety: Console is only used from a single CPU core (no SMP).
 unsafe impl Send for Console {}
 
 pub struct Console {
     fb_addr: *mut u8,     // real (MMIO) framebuffer
     fb_shadow: *mut u8,   // RAM shadow buffer
+    buf: *mut u8,         // cached active buffer (shadow if available, else fb_addr)
     fb_width: u32,
     fb_height: u32,
     fb_pitch: u32,        // bytes per scan line
@@ -56,16 +100,19 @@ pub struct Console {
     cursor_row: u32,
     cursor_col: u32,
     wrap_pending: bool,
+    flush_held: bool,
+    dirty_min_y: u32,     // top of dirty region (pixel row)
+    dirty_max_y: u32,     // bottom of dirty region (pixel row, exclusive)
     fg_color: u32,
     bg_color: u32,
 }
 
 impl Console {
-    /// Create an uninitialized console. Call `init` before use.
     pub const fn new() -> Self {
         Self {
             fb_addr: core::ptr::null_mut(),
             fb_shadow: core::ptr::null_mut(),
+            buf: core::ptr::null_mut(),
             fb_width: 0,
             fb_height: 0,
             fb_pitch: 0,
@@ -74,13 +121,14 @@ impl Console {
             cursor_row: 0,
             cursor_col: 0,
             wrap_pending: false,
-            fg_color: COLOR32_MAP[15], // white
-            bg_color: COLOR32_MAP[0],  // black
+            flush_held: false,
+            dirty_min_y: 0,
+            dirty_max_y: 0,
+            fg_color: COLOR32_MAP[15],
+            bg_color: COLOR32_MAP[0],
         }
     }
 
-    /// Initialize from a UEFI GOP framebuffer.
-    /// `shadow` must point to an allocation of at least `pitch * height` bytes.
     pub fn init(
         &mut self,
         fb_addr: *mut u8,
@@ -91,25 +139,21 @@ impl Console {
     ) {
         self.fb_addr = fb_addr;
         self.fb_shadow = shadow;
+        self.buf = if !shadow.is_null() { shadow } else { fb_addr };
         self.fb_width = width;
         self.fb_height = height;
         self.fb_pitch = pitch;
-        self.fb_cols = width / FONT_W as u32;
-        self.fb_rows = height / FONT_H as u32;
+        self.fb_cols = width / FONT_W;
+        self.fb_rows = height / FONT_H;
         self.cursor_row = 0;
         self.cursor_col = 0;
         self.wrap_pending = false;
+        self.flush_held = false;
+        self.dirty_min_y = 0;
+        self.dirty_max_y = 0;
         self.fg_color = COLOR32_MAP[15];
         self.bg_color = COLOR32_MAP[0];
         self.clear();
-    }
-
-    fn buf(&self) -> *mut u8 {
-        if !self.fb_shadow.is_null() {
-            self.fb_shadow
-        } else {
-            self.fb_addr
-        }
     }
 
     fn pixel(&self, x: u32, y: u32, color: u32) {
@@ -118,13 +162,29 @@ impl Console {
         }
         let offset = (y * self.fb_pitch + x * 4) as usize;
         unsafe {
-            let p = self.buf().add(offset) as *mut u32;
+            let p = self.buf.add(offset) as *mut u32;
             ptr::write(p, color);
         }
     }
 
-    fn flush_region(&self, y0: u32, rows: u32) {
+    fn flush_region(&mut self, y0: u32, rows: u32) {
         if self.fb_shadow.is_null() {
+            return;
+        }
+        if self.flush_held {
+            // Expand dirty region
+            let y_end = y0 + rows;
+            if self.dirty_min_y == self.dirty_max_y {
+                self.dirty_min_y = y0;
+                self.dirty_max_y = y_end;
+            } else {
+                if y0 < self.dirty_min_y {
+                    self.dirty_min_y = y0;
+                }
+                if y_end > self.dirty_max_y {
+                    self.dirty_max_y = y_end;
+                }
+            }
             return;
         }
         let offset = (y0 * self.fb_pitch) as usize;
@@ -138,8 +198,13 @@ impl Console {
         }
     }
 
-    fn flush_all(&self) {
+    fn flush_all(&mut self) {
         if self.fb_shadow.is_null() {
+            return;
+        }
+        if self.flush_held {
+            self.dirty_min_y = 0;
+            self.dirty_max_y = self.fb_height;
             return;
         }
         let bytes = (self.fb_pitch * self.fb_height) as usize;
@@ -148,60 +213,79 @@ impl Console {
         }
     }
 
+    fn flush_hold(&mut self) {
+        self.flush_held = true;
+        self.dirty_min_y = 0;
+        self.dirty_max_y = 0;
+    }
+
+    fn flush_release(&mut self) {
+        self.flush_held = false;
+        if self.dirty_min_y < self.dirty_max_y {
+            let y0 = self.dirty_min_y;
+            let rows = self.dirty_max_y - self.dirty_min_y;
+            self.flush_region(y0, rows);
+        }
+    }
+
     fn draw_char(&self, col: u32, row: u32, ch: u8, fg: u32, bg: u32) {
-        let x0 = col * FONT_W as u32;
-        let y0 = row * FONT_H as u32;
+        let x0 = col * FONT_W;
+        let y0 = row * FONT_H;
         let glyph = if ch < 128 {
             &FONT_8X16[ch as usize]
         } else {
             &FONT_8X16[0]
         };
-        for y in 0..FONT_H as u32 {
+        for y in 0..FONT_H {
             let bits = glyph[y as usize];
-            for x in 0..FONT_W as u32 {
-                let color = if bits & (0x80 >> x) != 0 { fg } else { bg };
-                self.pixel(x0 + x, y0 + y, color);
+            let row_offset = ((y0 + y) * self.fb_pitch + x0 * 4) as usize;
+            unsafe {
+                let row_ptr = self.buf.add(row_offset) as *mut u32;
+                for x in 0..FONT_W {
+                    let color = if bits & (0x80 >> x) != 0 { fg } else { bg };
+                    ptr::write(row_ptr.add(x as usize), color);
+                }
             }
         }
     }
 
     fn draw_cursor(&self, show: bool) {
-        let x0 = self.cursor_col * FONT_W as u32;
-        let y0 = self.cursor_row * FONT_H as u32 + FONT_H as u32 - 2;
+        let x0 = self.cursor_col * FONT_W;
+        let y0 = self.cursor_row * FONT_H + FONT_H - 2;
         let color = if show { self.fg_color } else { self.bg_color };
         for y in 0..2u32 {
-            for x in 0..FONT_W as u32 {
+            for x in 0..FONT_W {
                 self.pixel(x0 + x, y0 + y, color);
             }
         }
     }
 
-    fn scroll(&self) {
-        let buf = self.buf();
-        let row_bytes = self.fb_pitch * FONT_H as u32;
-        let total = self.fb_pitch * (self.fb_height - FONT_H as u32);
-        unsafe {
-            ptr::copy(buf.add(row_bytes as usize), buf, total as usize);
-            // Clear last row
-            let last = buf.add((self.fb_pitch * (self.fb_height - FONT_H as u32)) as usize);
-            let pixels = self.fb_width * FONT_H as u32;
-            let p = last as *mut u32;
-            for i in 0..pixels {
-                ptr::write(p.add(i as usize), self.bg_color);
+    fn clear_rows(&self, pixel_y: u32, rows: u32) {
+        for y in pixel_y..pixel_y + rows {
+            if y >= self.fb_height {
+                break;
+            }
+            unsafe {
+                let row_ptr = self.buf.add((y * self.fb_pitch) as usize) as *mut u32;
+                for x in 0..self.fb_width {
+                    ptr::write(row_ptr.add(x as usize), self.bg_color);
+                }
             }
         }
+    }
+
+    fn scroll(&mut self) {
+        let row_bytes = self.fb_pitch * FONT_H;
+        let total = self.fb_pitch * (self.fb_height - FONT_H);
+        unsafe {
+            ptr::copy(self.buf.add(row_bytes as usize), self.buf, total as usize);
+        }
+        self.clear_rows(self.fb_height - FONT_H, FONT_H);
         self.flush_all();
     }
 
     pub fn clear(&mut self) {
-        let buf = self.buf();
-        let total = self.fb_width * self.fb_height;
-        unsafe {
-            let p = buf as *mut u32;
-            for i in 0..total {
-                ptr::write(p.add(i as usize), self.bg_color);
-            }
-        }
+        self.clear_rows(0, self.fb_height);
         self.cursor_row = 0;
         self.cursor_col = 0;
         self.wrap_pending = false;
@@ -219,14 +303,13 @@ impl Console {
             return;
         }
         if c == b'\x08' {
-            // backspace
             if self.cursor_col > 0 {
                 self.cursor_col -= 1;
                 self.wrap_pending = false;
                 self.draw_char(self.cursor_col, self.cursor_row, b' ', self.fg_color, self.bg_color);
             }
             self.draw_cursor(true);
-            self.flush_region(self.cursor_row * FONT_H as u32, FONT_H as u32);
+            self.flush_region(self.cursor_row * FONT_H, FONT_H);
             return;
         }
         if c == b'\n' {
@@ -238,11 +321,10 @@ impl Console {
                 self.scroll();
                 self.cursor_row = self.fb_rows - 1;
             } else {
-                self.flush_region(old_row * FONT_H as u32, FONT_H as u32);
-                self.flush_region(self.cursor_row * FONT_H as u32, FONT_H as u32);
+                self.flush_region(old_row * FONT_H, FONT_H);
             }
             self.draw_cursor(true);
-            self.flush_region(self.cursor_row * FONT_H as u32, FONT_H as u32);
+            self.flush_region(self.cursor_row * FONT_H, FONT_H);
             return;
         }
 
@@ -265,20 +347,22 @@ impl Console {
             self.wrap_pending = true;
         }
         self.draw_cursor(true);
-        self.flush_region(char_row * FONT_H as u32, FONT_H as u32);
+        self.flush_region(char_row * FONT_H, FONT_H);
         if self.cursor_row != char_row {
-            self.flush_region(self.cursor_row * FONT_H as u32, FONT_H as u32);
+            self.flush_region(self.cursor_row * FONT_H, FONT_H);
         }
     }
 
     pub fn print(&mut self, s: &str) {
+        self.flush_hold();
         for b in s.bytes() {
             self.putchar(b);
         }
+        self.flush_release();
     }
 
-    pub fn set_color(&mut self, fg: usize, bg: usize) {
-        self.fg_color = COLOR32_MAP[fg & 0x0F];
-        self.bg_color = COLOR32_MAP[bg & 0x0F];
+    pub fn set_color(&mut self, fg: Color, bg: Color) {
+        self.fg_color = COLOR32_MAP[fg as usize];
+        self.bg_color = COLOR32_MAP[bg as usize];
     }
 }

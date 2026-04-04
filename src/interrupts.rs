@@ -40,8 +40,7 @@ static mut KEYBUF_TAIL: usize = 0;
 static mut SHIFT_HELD: bool = false;
 static mut CTRL_HELD: bool = false;
 
-// System tick counter
-static mut TICKS: u32 = 0;
+static mut TICKS: u64 = 0;
 
 // Scancode tables — 58 entries each (scancodes 0x00..0x39)
 #[rustfmt::skip]
@@ -224,7 +223,7 @@ unsafe fn pic_remap() {
         outb(PIC2_DATA, 0x02);
         outb(PIC1_DATA, 0x01);
         outb(PIC2_DATA, 0x01);
-        outb(PIC1_DATA, 0xFC); // allow IRQ0 + IRQ1
+        outb(PIC1_DATA, 0xFC);
         outb(PIC2_DATA, 0xFF);
     }
 }
@@ -254,82 +253,58 @@ extern "C" fn keyboard_handler_inner() {
         let scancode = inb(KB_DATA_PORT);
 
         // Modifier keys
-        if scancode == 0x2A || scancode == 0x36 {
-            core::ptr::write_volatile(&raw mut SHIFT_HELD, true);
-            outb(PIC1_CMD, PIC_EOI);
-            return;
-        }
-        if scancode == 0xAA || scancode == 0xB6 {
-            core::ptr::write_volatile(&raw mut SHIFT_HELD, false);
-            outb(PIC1_CMD, PIC_EOI);
-            return;
-        }
-        if scancode == 0x1D {
-            core::ptr::write_volatile(&raw mut CTRL_HELD, true);
-            outb(PIC1_CMD, PIC_EOI);
-            return;
-        }
-        if scancode == 0x9D {
-            core::ptr::write_volatile(&raw mut CTRL_HELD, false);
-            outb(PIC1_CMD, PIC_EOI);
-            return;
-        }
-
-        if scancode & 0x80 == 0 {
-            let sc = scancode as usize;
-            if sc < SCANCODE_LOWER.len() {
-                let shift = core::ptr::read_volatile(&raw const SHIFT_HELD);
-                let ctrl = core::ptr::read_volatile(&raw const CTRL_HELD);
-                let map = if shift { &SCANCODE_UPPER } else { &SCANCODE_LOWER };
-                let mut ascii = map[sc];
-                if ctrl && ascii >= b'a' && ascii <= b'z' {
-                    ascii &= 0x1F;
-                } else if ctrl && ascii >= b'A' && ascii <= b'Z' {
-                    ascii &= 0x1F;
-                }
-                if ascii != 0 {
-                    keybuf_put(ascii as i32);
+        match scancode {
+            0x2A | 0x36 => core::ptr::write_volatile(&raw mut SHIFT_HELD, true),
+            0xAA | 0xB6 => core::ptr::write_volatile(&raw mut SHIFT_HELD, false),
+            0x1D => core::ptr::write_volatile(&raw mut CTRL_HELD, true),
+            0x9D => core::ptr::write_volatile(&raw mut CTRL_HELD, false),
+            sc if sc & 0x80 == 0 => {
+                // Key press
+                let idx = sc as usize;
+                if idx < SCANCODE_LOWER.len() {
+                    let shift = core::ptr::read_volatile(&raw const SHIFT_HELD);
+                    let ctrl = core::ptr::read_volatile(&raw const CTRL_HELD);
+                    let map = if shift { &SCANCODE_UPPER } else { &SCANCODE_LOWER };
+                    let mut ascii = map[idx];
+                    if ctrl && ascii.is_ascii_alphabetic() {
+                        ascii &= 0x1F;
+                    }
+                    if ascii != 0 {
+                        keybuf_put(ascii as i32);
+                    }
                 }
             }
+            _ => {} // key release — ignore
         }
 
         outb(PIC1_CMD, PIC_EOI);
     }
 }
 
-// ISR stubs
+// ISR stubs — naked functions that save/restore registers and call inner handlers
 
-#[unsafe(naked)]
-unsafe extern "C" fn isr_timer() {
-    naked_asm!(
-        "push rax", "push rbx", "push rcx", "push rdx",
-        "push rbp", "push rsi", "push rdi",
-        "push r8", "push r9", "push r10", "push r11",
-        "push r12", "push r13", "push r14", "push r15",
-        "call timer_handler_inner",
-        "pop r15", "pop r14", "pop r13", "pop r12",
-        "pop r11", "pop r10", "pop r9", "pop r8",
-        "pop rdi", "pop rsi", "pop rbp",
-        "pop rdx", "pop rcx", "pop rbx", "pop rax",
-        "iretq",
-    );
+macro_rules! isr_stub {
+    ($name:ident, $handler:literal) => {
+        #[unsafe(naked)]
+        unsafe extern "C" fn $name() {
+            naked_asm!(
+                "push rax", "push rbx", "push rcx", "push rdx",
+                "push rbp", "push rsi", "push rdi",
+                "push r8", "push r9", "push r10", "push r11",
+                "push r12", "push r13", "push r14", "push r15",
+                concat!("call ", $handler),
+                "pop r15", "pop r14", "pop r13", "pop r12",
+                "pop r11", "pop r10", "pop r9", "pop r8",
+                "pop rdi", "pop rsi", "pop rbp",
+                "pop rdx", "pop rcx", "pop rbx", "pop rax",
+                "iretq",
+            );
+        }
+    };
 }
 
-#[unsafe(naked)]
-unsafe extern "C" fn isr_keyboard() {
-    naked_asm!(
-        "push rax", "push rbx", "push rcx", "push rdx",
-        "push rbp", "push rsi", "push rdi",
-        "push r8", "push r9", "push r10", "push r11",
-        "push r12", "push r13", "push r14", "push r15",
-        "call keyboard_handler_inner",
-        "pop r15", "pop r14", "pop r13", "pop r12",
-        "pop r11", "pop r10", "pop r9", "pop r8",
-        "pop rdi", "pop rsi", "pop rbp",
-        "pop rdx", "pop rcx", "pop rbx", "pop rax",
-        "iretq",
-    );
-}
+isr_stub!(isr_timer, "timer_handler_inner");
+isr_stub!(isr_keyboard, "keyboard_handler_inner");
 
 /// Initialize GDT, IDT, PIC, PIT, and enable interrupts.
 pub unsafe fn init() {
