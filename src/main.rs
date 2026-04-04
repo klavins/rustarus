@@ -20,6 +20,7 @@
 
 mod ata;
 mod basic;
+pub mod bga;
 pub mod cell;
 mod console;
 mod font;
@@ -30,6 +31,7 @@ mod interrupts;
 mod io;
 pub mod pci;
 pub mod speaker;
+pub mod vmware;
 
 use cell::StaticCell;
 use console::{Color, Console};
@@ -151,7 +153,7 @@ fn main() -> Status {
     basic::value::print_f64(con, height as f64);
     con.print("\n");
 
-    gpu::gpu_init(con);
+    gpu::gpu_init(con, width as u32, height as u32);
 
     unsafe { interrupts::init() };
 

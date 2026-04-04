@@ -1,4 +1,4 @@
-// gpu.rs - GPU driver trait and probe framework
+// gpu.rs - GPU driver probe framework
 //
 // Copyright (C) 2026 Eric Klavins
 //
@@ -15,70 +15,42 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use crate::bga::BgaDriver;
 use crate::cell::StaticCell;
 use crate::console::Console;
 use crate::pci::pci_read;
+use crate::vmware::VmwareDriver;
 
 /// Active GPU driver — enum dispatch avoids dynamic trait objects.
-/// Each step that adds a GPU driver adds a variant here.
 pub enum ActiveGpu {
     None,
-    // Step 7 will add: Bga(BgaDriver),
-    // Step 7 will add: Vmware(VmwareDriver),
+    Bga(BgaDriver),
+    Vmware(VmwareDriver),
+}
+
+macro_rules! gpu_dispatch {
+    ($self:expr, $default:expr, |$d:ident| $body:expr) => {
+        match $self {
+            ActiveGpu::None => $default,
+            ActiveGpu::Bga($d) => $body,
+            ActiveGpu::Vmware($d) => $body,
+        }
+    };
 }
 
 impl ActiveGpu {
-    pub fn is_active(&self) -> bool {
-        !matches!(self, ActiveGpu::None)
-    }
-
-    pub fn can_flip(&self) -> bool {
-        match self {
-            ActiveGpu::None => false,
-        }
-    }
-
-    pub fn page_addr(&self, _page: u8) -> *mut u8 {
-        match self {
-            ActiveGpu::None => core::ptr::null_mut(),
-        }
-    }
-
-    pub fn set_page(&mut self, _page: u8) {
-        match self {
-            ActiveGpu::None => {}
-        }
-    }
-
-    pub fn update(&mut self, _x: u32, _y: u32, _w: u32, _h: u32) {
-        match self {
-            ActiveGpu::None => {}
-        }
-    }
-
-    pub fn pitch(&self) -> u32 {
-        match self {
-            ActiveGpu::None => 0,
-        }
-    }
-
-    pub fn framebuffer(&self) -> *mut u8 {
-        match self {
-            ActiveGpu::None => core::ptr::null_mut(),
-        }
-    }
-
-    pub fn name(&self) -> &'static str {
-        match self {
-            ActiveGpu::None => "none",
-        }
-    }
+    pub fn is_active(&self) -> bool { !matches!(self, ActiveGpu::None) }
+    pub fn can_flip(&self) -> bool { gpu_dispatch!(self, false, |d| d.can_flip()) }
+    pub fn page_addr(&self, page: u8) -> *mut u8 { gpu_dispatch!(self, core::ptr::null_mut(), |d| d.page_addr(page)) }
+    pub fn set_page(&mut self, page: u8) { gpu_dispatch!(self, {}, |d| d.set_page(page)) }
+    pub fn update(&mut self, x: u32, y: u32, w: u32, h: u32) { gpu_dispatch!(self, {}, |d| d.update(x, y, w, h)) }
+    pub fn pitch(&self) -> u32 { gpu_dispatch!(self, 0, |d| d.pitch()) }
+    pub fn framebuffer(&self) -> *mut u8 { gpu_dispatch!(self, core::ptr::null_mut(), |d| d.framebuffer()) }
+    pub fn name(&self) -> &'static str { gpu_dispatch!(self, "none", |d| d.name()) }
 }
 
 pub static GPU: StaticCell<ActiveGpu> = StaticCell::new(ActiveGpu::None);
 
-/// Probe registered GPU drivers and activate the first match.
-/// Called during boot after console init.
 fn print_hex16(con: &mut Console, val: u16) {
     let hex = b"0123456789ABCDEF";
     con.putchar(hex[((val >> 12) & 0xF) as usize]);
@@ -141,17 +113,43 @@ fn pci_scan(con: &mut Console) {
     });
 }
 
-pub fn gpu_init(con: &mut Console) {
+/// Try to activate a GPU driver. Returns true if successful.
+fn try_activate(
+    gpu: &mut ActiveGpu,
+    active: ActiveGpu,
+    con: &mut Console,
+) -> bool {
+    let fb = gpu_dispatch!(&active, core::ptr::null_mut(), |d| d.framebuffer());
+    if fb.is_null() {
+        return false;
+    }
+    let name = gpu_dispatch!(&active, "", |d| d.name());
+    let flip = gpu_dispatch!(&active, false, |d| d.can_flip());
+    con.print(" Display: GOP -> ");
+    con.print(name);
+    if flip { con.print(" (page flip)"); }
+    con.putchar(b'\n');
+    *gpu = active;
+    true
+}
+
+/// Probe GPU drivers and activate the first match.
+pub fn gpu_init(con: &mut Console, width: u32, height: u32) {
     pci_scan(con);
 
     let gpu = unsafe { GPU.get() };
-    if gpu.is_active() {
-        con.print(" Display: GOP -> ");
-        con.print(gpu.name());
-        con.putchar(b'\n');
-    } else {
-        con.print(" Display: GOP\n");
+
+    if let Some(mut drv) = BgaDriver::detect() {
+        drv.init(width, height);
+        if try_activate(gpu, ActiveGpu::Bga(drv), con) { return; }
     }
+
+    if let Some(mut drv) = VmwareDriver::detect() {
+        drv.init(width, height);
+        if try_activate(gpu, ActiveGpu::Vmware(drv), con) { return; }
+    }
+
+    con.print(" Display: GOP\n");
 }
 
 /// Notify the active GPU of a framebuffer region change.
