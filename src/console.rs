@@ -267,9 +267,8 @@ impl Console {
             }
             unsafe {
                 let row_ptr = self.buf.add((y * self.fb_pitch) as usize) as *mut u32;
-                for x in 0..self.fb_width {
-                    ptr::write(row_ptr.add(x as usize), self.bg_color);
-                }
+                let row = core::slice::from_raw_parts_mut(row_ptr, self.fb_width as usize);
+                row.fill(self.bg_color);
             }
         }
     }

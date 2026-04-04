@@ -16,6 +16,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use core::arch::{asm, naked_asm};
+use crate::io::{outb, inb};
 
 // PIC ports
 const PIC1_CMD: u16 = 0x20;
@@ -61,21 +62,6 @@ static SCANCODE_UPPER: [u8; 58] = [
     b'*',0,  b' ',
 ];
 
-#[inline(always)]
-unsafe fn outb(port: u16, val: u8) {
-    unsafe {
-        asm!("out dx, al", in("dx") port, in("al") val, options(nomem, nostack));
-    }
-}
-
-#[inline(always)]
-unsafe fn inb(port: u16) -> u8 {
-    let val: u8;
-    unsafe {
-        asm!("in al, dx", out("al") val, in("dx") port, options(nomem, nostack));
-    }
-    val
-}
 
 fn keybuf_put(c: i32) {
     unsafe {
@@ -104,6 +90,20 @@ pub fn keybuf_read_blocking() -> i32 {
         let c = (*&raw const KEYBUF)[tail];
         core::ptr::write_volatile(&raw mut KEYBUF_TAIL, (tail + 1) % KEYBUF_SIZE);
         c
+    }
+}
+
+/// Non-blocking read from key buffer. Returns Some(key) or None.
+pub fn keybuf_try_read() -> Option<i32> {
+    unsafe {
+        let head = core::ptr::read_volatile(&raw const KEYBUF_HEAD);
+        let tail = core::ptr::read_volatile(&raw const KEYBUF_TAIL);
+        if head == tail {
+            return None;
+        }
+        let c = (*&raw const KEYBUF)[tail];
+        core::ptr::write_volatile(&raw mut KEYBUF_TAIL, (tail + 1) % KEYBUF_SIZE);
+        Some(c)
     }
 }
 

@@ -18,9 +18,13 @@
 #![no_std]
 #![no_main]
 
+mod ata;
+mod basic;
 mod console;
 mod font;
+mod fs;
 mod interrupts;
+mod io;
 
 use console::{Color, Console, ConsoleCell};
 use core::arch::asm;
@@ -119,9 +123,9 @@ fn main() -> Status {
     con.print(" UEFI Boot\n");
     con.set_color(Color::LightCyan, Color::Black);
     con.print(" Display: ");
-    print_u32(con, width as u32);
+    basic::value::print_f64(con, width as f64);
     con.print("x");
-    print_u32(con, height as u32);
+    basic::value::print_f64(con, height as f64);
     con.print("\n");
 
     unsafe { interrupts::init() };
@@ -129,54 +133,8 @@ fn main() -> Status {
     con.set_color(Color::LightGray, Color::Black);
     con.print(" RUSTARUS OS v1\n");
     con.set_color(Color::White, Color::Black);
-    con.print(" > ");
 
-    let mut line = [0u8; 80];
-    let mut pos = 0usize;
-
-    loop {
-        let c = interrupts::keybuf_read_blocking() as u8;
-
-        if c == b'\n' {
-            con.putchar(b'\n');
-            if pos > 0 {
-                con.print(" You typed: ");
-                for i in 0..pos {
-                    con.putchar(line[i]);
-                }
-                con.putchar(b'\n');
-            }
-            pos = 0;
-            con.print(" > ");
-        } else if c == b'\x08' {
-            if pos > 0 {
-                pos -= 1;
-                con.putchar(b'\x08');
-            }
-        } else if c != 0 && pos < line.len() - 1 {
-            line[pos] = c;
-            pos += 1;
-            con.putchar(c);
-        }
-    }
-}
-
-fn print_u32(con: &mut Console, mut n: u32) {
-    if n == 0 {
-        con.putchar(b'0');
-        return;
-    }
-    let mut buf = [0u8; 10];
-    let mut i = 0;
-    while n > 0 {
-        buf[i] = b'0' + (n % 10) as u8;
-        n /= 10;
-        i += 1;
-    }
-    while i > 0 {
-        i -= 1;
-        con.putchar(buf[i]);
-    }
+    basic::basic_repl(con)
 }
 
 #[panic_handler]
@@ -187,7 +145,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     if let Some(loc) = info.location() {
         con.print(loc.file());
         con.print(":");
-        print_u32(con, loc.line());
+        basic::value::print_f64(con, loc.line() as f64);
     }
     con.print("\n");
     halt();
