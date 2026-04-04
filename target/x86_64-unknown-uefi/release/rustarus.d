@@ -1,1 +1,0 @@
-/Users/ericklavins/Code/rustarus/target/x86_64-unknown-uefi/release/rustarus.efi: /Users/ericklavins/Code/rustarus/src/console.rs /Users/ericklavins/Code/rustarus/src/font.rs /Users/ericklavins/Code/rustarus/src/interrupts.rs /Users/ericklavins/Code/rustarus/src/main.rs
