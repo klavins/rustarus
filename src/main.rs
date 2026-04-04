@@ -24,9 +24,11 @@ pub mod cell;
 mod console;
 mod font;
 mod fs;
+pub mod gpu;
 pub mod graphics;
 mod interrupts;
 mod io;
+pub mod pci;
 pub mod speaker;
 
 use cell::StaticCell;
@@ -39,10 +41,21 @@ use uefi::proto::console::gop::GraphicsOutput;
 static CONSOLE: StaticCell<Console> = StaticCell::new(Console::new());
 
 #[inline(always)]
-fn halt() -> ! {
+pub fn halt() -> ! {
     loop {
         unsafe { asm!("hlt") };
     }
+}
+
+/// Shut down via ACPI power management (works in QEMU/Bochs/VirtualBox).
+/// Falls back to halt if running on real hardware.
+pub fn shutdown() -> ! {
+    unsafe {
+        crate::io::outw(0x604, 0x2000);  // QEMU
+        crate::io::outw(0xB004, 0x2000); // Bochs
+        crate::io::outw(0x4004, 0x3400); // VirtualBox
+    }
+    halt()
 }
 
 #[entry]
@@ -137,6 +150,8 @@ fn main() -> Status {
     con.print("x");
     basic::value::print_f64(con, height as f64);
     con.print("\n");
+
+    gpu::gpu_init(con);
 
     unsafe { interrupts::init() };
 

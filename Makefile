@@ -29,7 +29,7 @@ run: img $(DISK)
 		-drive format=raw,file=$(IMG),if=virtio \
 		-drive file=$(DISK),format=raw,if=none,id=data -device ide-hd,drive=data,bus=ide.0 \
 		-m 256 -smp 1 -net none \
-		-display cocoa,zoom-to-fit=on \
+		-display cocoa,zoom-to-fit=on -full-screen \
 		-vga none -device ramfb \
 		-machine pcspk-audiodev=snd \
 		-audiodev coreaudio,id=snd

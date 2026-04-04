@@ -40,6 +40,7 @@ pub struct Graphics {
     cursor_x: i32,
     cursor_y: i32,
     draw_color: u32,
+    draw_page: u8,
     dirty_y0: u32,
     dirty_y1: u32,
 }
@@ -65,6 +66,7 @@ impl Graphics {
             cursor_x: 0,
             cursor_y: 0,
             draw_color: 0x00FFFFFF,
+            draw_page: 0,
             dirty_y0: 0,
             dirty_y1: 0,
         }
@@ -307,22 +309,41 @@ impl Graphics {
     }
 
     pub fn present(&mut self) {
-        if self.mode < 2 || self.shadow.is_null() || self.fb_addr.is_null() {
+        if self.mode < 2 || self.shadow.is_null() {
             return;
         }
-        if self.dirty_y0 >= self.dirty_y1 {
-            return;
-        }
-        let y0 = self.dirty_y0.min(self.fb_height);
-        let y1 = self.dirty_y1.min(self.fb_height);
-        let offset = (y0 * self.fb_pitch) as usize;
-        let bytes = ((y1 - y0) * self.fb_pitch) as usize;
-        unsafe {
-            ptr::copy_nonoverlapping(
-                self.shadow.add(offset),
-                self.fb_addr.add(offset),
-                bytes,
-            );
+
+        let gpu = unsafe { crate::gpu::GPU.get() };
+
+        if gpu.can_flip() {
+            // Page flip path: copy shadow to back page, then flip
+            let back = 1 - self.draw_page;
+            let dest = gpu.page_addr(back);
+            if !dest.is_null() {
+                let bytes = (self.fb_pitch * self.fb_height) as usize;
+                unsafe {
+                    ptr::copy_nonoverlapping(self.shadow, dest, bytes);
+                }
+                gpu.set_page(back);
+                self.draw_page = back;
+            }
+        } else {
+            // Dirty-region path: memcpy changed rows to MMIO framebuffer
+            if self.fb_addr.is_null() || self.dirty_y0 >= self.dirty_y1 {
+                return;
+            }
+            let y0 = self.dirty_y0.min(self.fb_height);
+            let y1 = self.dirty_y1.min(self.fb_height);
+            let offset = (y0 * self.fb_pitch) as usize;
+            let bytes = ((y1 - y0) * self.fb_pitch) as usize;
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    self.shadow.add(offset),
+                    self.fb_addr.add(offset),
+                    bytes,
+                );
+            }
+            crate::gpu::gpu_update(0, y0, self.fb_width, y1 - y0);
         }
         self.dirty_reset();
     }

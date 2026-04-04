@@ -120,22 +120,35 @@ pub fn fs_format() -> Result<(), &'static str> {
     Ok(())
 }
 
-pub fn fs_save(name: &[u8], data: &[u8]) -> Result<(), &'static str> {
-    let mut file_count = read_validated_header()?;
+fn shift_entries_down(from: usize, file_count: u32) -> Result<(), &'static str> {
+    for j in from..file_count as usize - 1 {
+        let next = read_entry(j + 1)?;
+        write_entry(j, &next.name[..next.name_len], next.start_sector, next.size_bytes)?;
+    }
+    Ok(())
+}
 
-    // Delete existing file with same name (inline to avoid redundant I/O)
+/// Find and remove a file entry by name. Returns new file_count, or None if not found.
+fn remove_entry_by_name(name: &[u8], file_count: u32) -> Result<Option<u32>, &'static str> {
     let name_len = name.len();
     for i in 0..file_count as usize {
         let entry = read_entry(i)?;
         if names_match(&entry.name, entry.name_len, name, name_len) {
-            for j in i..file_count as usize - 1 {
-                let next = read_entry(j + 1)?;
-                write_entry(j, &next.name[..next.name_len], next.start_sector, next.size_bytes)?;
-            }
-            file_count -= 1;
-            write_header(file_count)?;
-            break;
+            shift_entries_down(i, file_count)?;
+            let new_count = file_count - 1;
+            write_header(new_count)?;
+            return Ok(Some(new_count));
         }
+    }
+    Ok(None)
+}
+
+pub fn fs_save(name: &[u8], data: &[u8]) -> Result<(), &'static str> {
+    let mut file_count = read_validated_header()?;
+
+    // Delete existing file with same name (avoids redundant header re-read)
+    if let Some(new_count) = remove_entry_by_name(name, file_count)? {
+        file_count = new_count;
     }
 
     if file_count as usize >= FS_MAX_FILES {
@@ -187,21 +200,10 @@ pub fn fs_load(name: &[u8], buf: &mut [u8], max: usize) -> Result<usize, &'stati
 
 pub fn fs_delete(name: &[u8]) -> Result<(), &'static str> {
     let file_count = read_validated_header()?;
-
-    let name_len = name.len();
-    for i in 0..file_count as usize {
-        let entry = read_entry(i)?;
-        if names_match(&entry.name, entry.name_len, name, name_len) {
-            // Shift remaining entries down
-            for j in i..file_count as usize - 1 {
-                let next = read_entry(j + 1)?;
-                write_entry(j, &next.name[..next.name_len], next.start_sector, next.size_bytes)?;
-            }
-            write_header(file_count - 1)?;
-            return Ok(());
-        }
+    match remove_entry_by_name(name, file_count)? {
+        Some(_) => Ok(()),
+        None => Err("FILE NOT FOUND"),
     }
-    Err("FILE NOT FOUND")
 }
 
 pub fn fs_list(con: &mut Console) {

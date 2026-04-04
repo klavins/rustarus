@@ -25,7 +25,7 @@ const SYS_CTRL: u16 = 0x61;
 const SPK_ENABLE: u8 = 0x03; // PIT gate + speaker enable
 
 pub fn speaker_on(freq: u32) {
-    if freq == 0 {
+    if freq == 0 || freq > PIT_FREQ {
         return;
     }
     let div = PIT_FREQ / freq;

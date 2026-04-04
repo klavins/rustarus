@@ -243,6 +243,10 @@ impl BasicState {
             TokenKind::TextCmd => self.exec_text(tl, start + 1),
             TokenKind::Show => { Self::gfx().present(); Ok(()) }
             TokenKind::Sound => self.exec_sound(tl, start + 1),
+            TokenKind::Quit => {
+                con.print(" SHUTTING DOWN...\n");
+                crate::shutdown();
+            }
             TokenKind::Ident if tl.get(start + 1).kind == TokenKind::Eq => {
                 self.exec_let(tl, start)
             }
