@@ -20,19 +20,22 @@
 
 mod ata;
 mod basic;
+pub mod cell;
 mod console;
 mod font;
 mod fs;
+pub mod graphics;
 mod interrupts;
 mod io;
 
-use console::{Color, Console, ConsoleCell};
+use cell::StaticCell;
+use console::{Color, Console};
 use core::arch::asm;
 use uefi::mem::memory_map::MemoryMap;
 use uefi::prelude::*;
 use uefi::proto::console::gop::GraphicsOutput;
 
-static CONSOLE: ConsoleCell = ConsoleCell::new(Console::new());
+static CONSOLE: StaticCell<Console> = StaticCell::new(Console::new());
 
 #[inline(always)]
 fn halt() -> ! {
@@ -101,7 +104,8 @@ fn main() -> Status {
         if base < fb_end && end > fb_start {
             continue;
         }
-        if size < fb_size as u64 {
+        // Need 2x fb_size: shadow buffer + graphics save buffer
+        if size < (fb_size as u64) * 2 {
             continue;
         }
         if size > best_size {
@@ -115,9 +119,14 @@ fn main() -> Status {
     }
 
     let shadow = best_base as *mut u8;
+    let saved_fb = unsafe { shadow.add(fb_size) };
 
     let con = unsafe { CONSOLE.get() };
     con.init(fb_base, shadow, width as u32, height as u32, pitch as u32);
+
+    // Initialize graphics module with same framebuffer
+    let gfx = unsafe { graphics::GRAPHICS.get() };
+    gfx.init(fb_base, shadow, saved_fb, width as u32, height as u32, pitch as u32);
 
     con.set_color(Color::Green, Color::Black);
     con.print(" UEFI Boot\n");

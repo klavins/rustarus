@@ -234,6 +234,14 @@ impl BasicState {
             TokenKind::Dir => { crate::fs::fs_list(con); Ok(()) }
             TokenKind::Delete => self.exec_delete(tl, start + 1, con),
             TokenKind::Format => self.exec_format(con),
+            TokenKind::GrCmd => self.exec_graphics(tl, start + 1, con),
+            TokenKind::Plot => self.exec_plot(tl, start + 1),
+            TokenKind::Drawto => self.exec_drawto(tl, start + 1),
+            TokenKind::Fillto => self.exec_fillto(tl, start + 1),
+            TokenKind::ColorCmd => self.exec_color(tl, start + 1),
+            TokenKind::Pos => self.exec_pos(tl, start + 1),
+            TokenKind::TextCmd => self.exec_text(tl, start + 1),
+            TokenKind::Show => { Self::gfx().present(); Ok(()) }
             TokenKind::Ident if tl.get(start + 1).kind == TokenKind::Eq => {
                 self.exec_let(tl, start)
             }
@@ -538,6 +546,74 @@ impl BasicState {
         if len > 0 && (buf[0] == b'Y' || buf[0] == b'y') {
             crate::fs::fs_format()?;
             con.print(" FORMATTED\n");
+        }
+        Ok(())
+    }
+
+    fn gfx() -> &'static mut crate::graphics::Graphics {
+        unsafe { crate::graphics::GRAPHICS.get() }
+    }
+
+    fn parse_xy(&mut self, tl: &TokenLine, start: usize) -> Result<(i32, i32, usize), &'static str> {
+        let mut parser = Parser::new(tl, start, &mut self.vars);
+        let x = parser.parse_expr()? as i32;
+        let pos = parser.pos;
+        if tl.get(pos).kind != TokenKind::Comma {
+            return Err("SYNTAX ERROR");
+        }
+        let mut parser = Parser::new(tl, pos + 1, &mut self.vars);
+        let y = parser.parse_expr()? as i32;
+        Ok((x, y, parser.pos))
+    }
+
+    fn exec_graphics(&mut self, tl: &TokenLine, start: usize, con: &mut Console) -> Result<(), &'static str> {
+        let mut parser = Parser::new(tl, start, &mut self.vars);
+        let mode = parser.parse_expr()? as u8;
+        Self::gfx().set_mode(mode, con);
+        Ok(())
+    }
+
+    fn exec_plot(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
+        let (x, y, _) = self.parse_xy(tl, start)?;
+        Self::gfx().plot(x, y);
+        Ok(())
+    }
+
+    fn exec_drawto(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
+        let (x, y, _) = self.parse_xy(tl, start)?;
+        Self::gfx().drawto(x, y);
+        Ok(())
+    }
+
+    fn exec_fillto(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
+        let (x, y, _) = self.parse_xy(tl, start)?;
+        Self::gfx().fillto(x, y);
+        Ok(())
+    }
+
+    fn exec_color(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
+        let mut parser = Parser::new(tl, start, &mut self.vars);
+        let idx = parser.parse_expr()? as u8;
+        Self::gfx().set_color(idx);
+        Ok(())
+    }
+
+    fn exec_pos(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
+        let (x, y, _) = self.parse_xy(tl, start)?;
+        Self::gfx().pos(x, y);
+        Ok(())
+    }
+
+    fn exec_text(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
+        let tok = tl.get(start);
+        if tok.kind == TokenKind::StringLit {
+            Self::gfx().text(&tok.str_buf[..tok.str_len]);
+        } else {
+            let mut parser = Parser::new(tl, start, &mut self.vars);
+            let val = parser.parse_expr()?;
+            let mut buf = [0u8; 32];
+            let len = super::value::format_f64(val, &mut buf);
+            Self::gfx().text(&buf[..len]);
         }
         Ok(())
     }

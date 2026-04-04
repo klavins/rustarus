@@ -190,6 +190,12 @@ impl<'a> Parser<'a> {
                     return f(arg);
                 }
 
+                // Built-in constants: SCRW, SCRH
+                if let Some(val) = match_builtin_const(&tok.str_buf[..tok.str_len]) {
+                    self.advance();
+                    return Ok(val);
+                }
+
                 // Variable A-Z
                 let idx = var_index(tok)?;
                 self.advance();
@@ -218,6 +224,35 @@ fn match_builtin(name: &[u8]) -> Option<fn(f64) -> Result<f64, &'static str>> {
         (3, b"SQR") => Some(|n| {
             if n < 0.0 { Err("ILLEGAL QUANTITY") } else { Ok(sqrt_approx(n)) }
         }),
+        _ => None,
+    }
+}
+
+fn match_builtin_const(name: &[u8]) -> Option<f64> {
+    if name.len() != 4 {
+        return None;
+    }
+    let mut upper = [0u8; 4];
+    for i in 0..4 {
+        upper[i] = name[i].to_ascii_uppercase();
+    }
+    match &upper {
+        b"SCRW" => {
+            let gfx = unsafe { crate::graphics::GRAPHICS.get() };
+            if gfx.mode() >= 2 {
+                Some(gfx.virt_width() as f64)
+            } else {
+                Some(0.0)
+            }
+        }
+        b"SCRH" => {
+            let gfx = unsafe { crate::graphics::GRAPHICS.get() };
+            if gfx.mode() >= 2 {
+                Some(gfx.virt_height() as f64)
+            } else {
+                Some(0.0)
+            }
+        }
         _ => None,
     }
 }

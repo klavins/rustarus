@@ -16,7 +16,6 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::font::FONT_8X16;
-use core::cell::UnsafeCell;
 use core::ptr;
 
 const FONT_W: u32 = 8;
@@ -65,27 +64,7 @@ const COLOR32_MAP: [u32; 16] = [
     0x00FFFFFF, // white
 ];
 
-/// Single-core wrapper for Console — no locking, just satisfies Rust's
-/// static Sync requirement. The panic handler can always access it.
-pub struct ConsoleCell(UnsafeCell<Console>);
-
-// Safety: single-core, no SMP. Only one execution context accesses the
-// console at a time (main loop or interrupt handler, never both writing).
-unsafe impl Sync for ConsoleCell {}
-
-impl ConsoleCell {
-    pub const fn new(console: Console) -> Self {
-        Self(UnsafeCell::new(console))
-    }
-
-    /// Get a mutable reference to the console.
-    /// Safety: caller must ensure no concurrent access.
-    pub unsafe fn get(&self) -> &mut Console {
-        unsafe { &mut *self.0.get() }
-    }
-}
-
-// Safety: Console is only used from a single CPU core (no SMP).
+// Safety: Console contains raw pointers but is only used from a single CPU core.
 unsafe impl Send for Console {}
 
 pub struct Console {
