@@ -619,30 +619,30 @@ impl BasicState {
         Ok(())
     }
 
+    /// Parse the next comma-separated expression argument.
+    fn parse_comma_arg(&mut self, tl: &TokenLine, pos: usize) -> Result<(f64, usize), &'static str> {
+        if tl.get(pos).kind != TokenKind::Comma {
+            return Err("SYNTAX ERROR");
+        }
+        let mut parser = Parser::new(tl, pos + 1, &mut self.vars);
+        let val = parser.parse_expr()?;
+        Ok((val, parser.pos))
+    }
+
     fn exec_sound(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
         // SOUND voice, pitch, distortion, volume
+        // Voice and distortion are parsed but ignored (PC speaker only)
         let mut parser = Parser::new(tl, start, &mut self.vars);
         let _voice = parser.parse_expr()?;
-        let mut pos = parser.pos;
-        if tl.get(pos).kind == TokenKind::Comma { pos += 1; }
+        let pos = parser.pos;
+        let (pitch, pos) = self.parse_comma_arg(tl, pos)?;
+        let (_distortion, pos) = self.parse_comma_arg(tl, pos)?;
+        let (volume, _) = self.parse_comma_arg(tl, pos)?;
 
-        let mut parser = Parser::new(tl, pos, &mut self.vars);
-        let pitch = parser.parse_expr()? as u8;
-        pos = parser.pos;
-        if tl.get(pos).kind == TokenKind::Comma { pos += 1; }
-
-        let mut parser = Parser::new(tl, pos, &mut self.vars);
-        let _distortion = parser.parse_expr()?;
-        pos = parser.pos;
-        if tl.get(pos).kind == TokenKind::Comma { pos += 1; }
-
-        let mut parser = Parser::new(tl, pos, &mut self.vars);
-        let volume = parser.parse_expr()? as i32;
-
-        if volume == 0 {
+        if volume as i32 == 0 {
             crate::speaker::speaker_off();
         } else {
-            let freq = crate::speaker::atari_pitch_to_hz(pitch);
+            let freq = crate::speaker::atari_pitch_to_hz(pitch as u8);
             crate::speaker::speaker_on(freq);
         }
         Ok(())
