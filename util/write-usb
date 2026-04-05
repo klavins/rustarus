@@ -1,0 +1,53 @@
+#!/bin/bash
+# Write the UEFI boot image to a USB stick.
+# Usage: ./util/write-usb diskN  (e.g., disk6)
+#
+# WARNING: This will ERASE the target disk!
+#
+# Steps:
+#   1. Insert USB stick
+#   2. Run: diskutil list   (find the disk, e.g., disk6)
+#   3. Run: ./util/write-usb disk6
+set -e
+
+if [ -z "$1" ]; then
+    echo "Usage: $0 diskN  (e.g., disk6)"
+    echo ""
+    echo "Find your USB disk with: diskutil list"
+    exit 1
+fi
+
+DISK="/dev/$1"
+RDISK="/dev/r$1"
+IMG="rustarus-uefi.img"
+
+if [ ! -f "$IMG" ]; then
+    echo "Error: $IMG not found. Run 'make img' first."
+    exit 1
+fi
+
+# Safety check — refuse to write to disk0 or disk1
+case "$1" in
+    disk0|disk1)
+        echo "Error: refusing to write to $DISK (likely your system disk)"
+        exit 1
+        ;;
+esac
+
+echo "WARNING: This will erase $DISK"
+echo "Size: $(diskutil info "$DISK" 2>/dev/null | grep 'Disk Size' || echo 'unknown')"
+read -p "Continue? (y/N) " confirm
+if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+    echo "Aborted."
+    exit 0
+fi
+
+echo "Unmounting..."
+diskutil unmountDisk "$DISK" 2>/dev/null || true
+
+echo "Writing $IMG to $RDISK..."
+sudo dd if="$IMG" of="$RDISK" bs=1M
+sync
+
+echo "Done. You can now boot from the USB stick."
+echo "On the target machine: enter UEFI/BIOS setup and select USB boot."

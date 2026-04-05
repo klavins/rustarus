@@ -135,6 +135,16 @@ impl Console {
         self.clear();
     }
 
+    /// Switch the MMIO framebuffer target (used when a GPU driver takes over).
+    /// The shadow buffer stays the same — only the flush destination changes.
+    pub fn set_fb_addr(&mut self, fb_addr: *mut u8) {
+        self.fb_addr = fb_addr;
+    }
+
+    pub fn fb_addr(&self) -> *mut u8 {
+        self.fb_addr
+    }
+
     fn pixel(&self, x: u32, y: u32, color: u32) {
         if x >= self.fb_width || y >= self.fb_height {
             return;
@@ -175,6 +185,7 @@ impl Console {
                 bytes,
             );
         }
+        crate::gpu::gpu_update(0, y0, self.fb_width, rows);
     }
 
     fn flush_all(&mut self) {
@@ -190,6 +201,7 @@ impl Console {
         unsafe {
             ptr::copy_nonoverlapping(self.fb_shadow, self.fb_addr, bytes);
         }
+        crate::gpu::gpu_update(0, 0, self.fb_width, self.fb_height);
     }
 
     fn flush_hold(&mut self) {

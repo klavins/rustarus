@@ -28,6 +28,7 @@ mod fs;
 pub mod gpu;
 pub mod graphics;
 mod interrupts;
+pub mod nvidia;
 mod io;
 pub mod pci;
 pub mod speaker;
@@ -153,7 +154,7 @@ fn main() -> Status {
     basic::value::print_f64(con, height as f64);
     con.print("\n");
 
-    gpu::gpu_init(con, width as u32, height as u32);
+    gpu::gpu_init(con, fb_base, width as u32, height as u32, pitch as u32);
 
     unsafe { interrupts::init() };
 

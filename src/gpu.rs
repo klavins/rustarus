@@ -18,12 +18,14 @@
 use crate::bga::BgaDriver;
 use crate::cell::StaticCell;
 use crate::console::Console;
+use crate::nvidia::NvidiaDriver;
 use crate::pci::pci_read;
 use crate::vmware::VmwareDriver;
 
 /// Active GPU driver — enum dispatch avoids dynamic trait objects.
 pub enum ActiveGpu {
     None,
+    Nvidia(NvidiaDriver),
     Bga(BgaDriver),
     Vmware(VmwareDriver),
 }
@@ -32,6 +34,7 @@ macro_rules! gpu_dispatch {
     ($self:expr, $default:expr, |$d:ident| $body:expr) => {
         match $self {
             ActiveGpu::None => $default,
+            ActiveGpu::Nvidia($d) => $body,
             ActiveGpu::Bga($d) => $body,
             ActiveGpu::Vmware($d) => $body,
         }
@@ -125,6 +128,17 @@ fn try_activate(
     }
     let name = gpu_dispatch!(&active, "", |d| d.name());
     let flip = gpu_dispatch!(&active, false, |d| d.can_flip());
+
+    // Switch console and graphics to the GPU's framebuffer
+    let old_fb = con.fb_addr();
+    if fb != old_fb {
+        con.set_fb_addr(fb);
+        let gfx = unsafe { crate::graphics::GRAPHICS.get() };
+        gfx.set_fb_addr(fb);
+        // Flush current shadow buffer content to the new framebuffer
+        con.clear();
+    }
+
     con.print(" Display: GOP -> ");
     con.print(name);
     if flip { con.print(" (page flip)"); }
@@ -134,10 +148,16 @@ fn try_activate(
 }
 
 /// Probe GPU drivers and activate the first match.
-pub fn gpu_init(con: &mut Console, width: u32, height: u32) {
+pub fn gpu_init(con: &mut Console, fb: *mut u8, width: u32, height: u32, pitch: u32) {
     pci_scan(con);
 
     let gpu = unsafe { GPU.get() };
+
+    // NVIDIA first (highest priority) — needs GOP fb info for WC path
+    if let Some(mut drv) = NvidiaDriver::detect(con) {
+        drv.init(fb, width, height, pitch, con);
+        if try_activate(gpu, ActiveGpu::Nvidia(drv), con) { return; }
+    }
 
     if let Some(mut drv) = BgaDriver::detect() {
         drv.init(width, height);

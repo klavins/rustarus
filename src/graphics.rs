@@ -91,6 +91,10 @@ impl Graphics {
         self.mode = 0;
     }
 
+    pub fn set_fb_addr(&mut self, fb_addr: *mut u8) {
+        self.fb_addr = fb_addr;
+    }
+
     pub fn mode(&self) -> u8 {
         self.mode
     }

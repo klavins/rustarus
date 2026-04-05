@@ -63,14 +63,14 @@ impl VmwareDriver {
     fn svga_write(&self, reg: u32, val: u32) {
         unsafe {
             outl(self.io_base, reg);
-            outl(self.io_base + 4, val);
+            outl(self.io_base + 1, val);
         }
     }
 
     fn svga_read(&self, reg: u32) -> u32 {
         unsafe {
             outl(self.io_base, reg);
-            inl(self.io_base + 4)
+            inl(self.io_base + 1)
         }
     }
 
