@@ -1,0 +1,59 @@
+#!/bin/bash
+# Run a BASIC program in QEMU and capture serial output.
+# Usage: ./util/run-test examples/TestAll.bas [timeout_seconds]
+#
+# The script:
+#   1. Writes the .bas file to disk.img as AUTORUN.BAS
+#   2. Boots QEMU with -nographic -serial stdio
+#   3. Captures output until timeout (default 30s)
+#   4. Removes AUTORUN.BAS from disk
+#   5. Prints captured output
+set -e
+
+if [ -z "$1" ]; then
+    echo "Usage: $0 <file.bas> [timeout_seconds]"
+    exit 1
+fi
+
+BAS_FILE="$1"
+TIMEOUT="${2:-30}"
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_DIR"
+
+OVMF_CODE="/opt/homebrew/share/qemu/edk2-x86_64-code.fd"
+OVMF_VARS="/opt/homebrew/share/qemu/edk2-i386-vars.fd"
+IMG="rustarus-uefi.img"
+DISK="disk.img"
+
+# Build if needed
+make img >/dev/null 2>&1
+if [ ! -f "$DISK" ]; then
+    make "$DISK" >/dev/null 2>&1
+fi
+
+# Write test program as AUTORUN.BAS
+./util/idu -f "$DISK" write AUTORUN.BAS "$BAS_FILE" >/dev/null
+
+# Copy OVMF vars (QEMU modifies it)
+cp "$OVMF_VARS" /tmp/ovmf-vars-test.fd
+
+# Run QEMU with serial output to file, no display
+SERIAL_OUT=$(mktemp)
+
+gtimeout "$TIMEOUT" qemu-system-x86_64 \
+    -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+    -drive if=pflash,format=raw,file=/tmp/ovmf-vars-test.fd \
+    -drive format=raw,file="$IMG",if=virtio \
+    -drive file="$DISK",format=raw,if=none,id=data -device ide-hd,drive=data,bus=ide.0 \
+    -m 256 -smp 1 -net none \
+    -display none \
+    -vga none -device ramfb \
+    -serial "file:$SERIAL_OUT" 2>/dev/null || true
+
+cat "$SERIAL_OUT"
+
+# Clean up
+./util/idu -f "$DISK" delete AUTORUN.BAS >/dev/null 2>&1 || true
+rm -f /tmp/ovmf-vars-test.fd "$SERIAL_OUT"

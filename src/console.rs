@@ -284,6 +284,9 @@ impl Console {
     }
 
     pub fn putchar(&mut self, c: u8) {
+        // Mirror to serial port for test capture
+        if c == b'\n' { crate::serial::serial_putchar(b'\r'); }
+        crate::serial::serial_putchar(c);
         self.draw_cursor(false);
 
         if c == b'\r' {

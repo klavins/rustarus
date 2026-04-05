@@ -726,7 +726,7 @@ impl BasicState {
     }
 
     /// Deserialize "linenum text\n" format back into program lines.
-    fn deserialize_program(&mut self, data: &[u8], len: usize) {
+    pub fn deserialize_program(&mut self, data: &[u8], len: usize) {
         self.line_count = 0;
 
         let mut i = 0;
@@ -771,7 +771,7 @@ impl BasicState {
         }
     }
 
-    fn disk_buf() -> &'static mut [u8; PROGRAM_BUF_SIZE] {
+    pub fn disk_buf() -> &'static mut [u8; PROGRAM_BUF_SIZE] {
         static mut BUF: [u8; PROGRAM_BUF_SIZE] = [0; PROGRAM_BUF_SIZE];
         unsafe { &mut *core::ptr::addr_of_mut!(BUF) }
     }

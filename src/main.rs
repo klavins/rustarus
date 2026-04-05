@@ -33,6 +33,7 @@ pub mod nvidia;
 mod io;
 pub mod pat;
 pub mod pci;
+pub mod serial;
 pub mod speaker;
 pub mod vmware;
 
@@ -140,7 +141,8 @@ fn main() -> Status {
     let shadow = best_base as *mut u8;
     let saved_fb = unsafe { shadow.add(fb_size) };
 
-    // Set up PAT for write-combining and apply to GOP framebuffer
+    serial::serial_init();
+
     pat::pat_init();
     pat::pat_set_write_combining(fb_base as u64, fb_size as u64);
 

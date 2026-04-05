@@ -58,6 +58,17 @@ pub fn basic_repl(con: &mut Console) -> ! {
 
     parser::rng_seed();
 
+    // Check for AUTORUN.BAS on disk
+    {
+        let buf = exec::BasicState::disk_buf();
+        if let Ok(size) = crate::fs::fs_load(b"AUTORUN.BAS", buf, 16384) {
+            state.vars = [0.0; 26];
+            state.deserialize_program(buf, size);
+            con.print(" AUTORUN.BAS\n");
+            state.run(con);
+        }
+    }
+
     let mut line_buf = [0u8; 256];
 
     loop {
