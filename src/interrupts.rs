@@ -252,6 +252,16 @@ extern "C" fn keyboard_handler_inner() {
     unsafe {
         let scancode = inb(KB_DATA_PORT);
 
+        // Update keystate array at 0x70000 (128 bytes, 1=pressed, 0=released)
+        const KEYSTATE_BASE: *mut u8 = 0x70000 as *mut u8;
+        if scancode & 0x80 != 0 {
+            // Key release
+            core::ptr::write_volatile(KEYSTATE_BASE.add((scancode & 0x7F) as usize), 0);
+        } else {
+            // Key press
+            core::ptr::write_volatile(KEYSTATE_BASE.add(scancode as usize), 1);
+        }
+
         // Modifier keys
         match scancode {
             0x2A | 0x36 => core::ptr::write_volatile(&raw mut SHIFT_HELD, true),
@@ -259,7 +269,6 @@ extern "C" fn keyboard_handler_inner() {
             0x1D => core::ptr::write_volatile(&raw mut CTRL_HELD, true),
             0x9D => core::ptr::write_volatile(&raw mut CTRL_HELD, false),
             sc if sc & 0x80 == 0 => {
-                // Key press
                 let idx = sc as usize;
                 if idx < SCANCODE_LOWER.len() {
                     let shift = core::ptr::read_volatile(&raw const SHIFT_HELD);
@@ -274,7 +283,7 @@ extern "C" fn keyboard_handler_inner() {
                     }
                 }
             }
-            _ => {} // key release — ignore
+            _ => {}
         }
 
         outb(PIC1_CMD, PIC_EOI);
