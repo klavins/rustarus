@@ -18,6 +18,8 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
 pub mod ahci;
 mod ata;
 mod basic;
@@ -28,6 +30,7 @@ mod font;
 mod fs;
 pub mod gpu;
 pub mod graphics;
+mod heap;
 mod interrupts;
 pub mod nvidia;
 mod io;
@@ -36,6 +39,9 @@ pub mod pci;
 pub mod serial;
 pub mod speaker;
 pub mod vmware;
+
+#[global_allocator]
+static ALLOCATOR: heap::HeapAllocator = heap::HeapAllocator;
 
 use cell::StaticCell;
 use console::{Color, Console};
@@ -142,6 +148,11 @@ fn main() -> Status {
     let saved_fb = unsafe { shadow.add(fb_size) };
 
     serial::serial_init();
+
+    // Initialize heap allocator with memory after shadow + save buffers
+    let heap_start = unsafe { shadow.add(fb_size * 2) };
+    let heap_size = best_size as usize - fb_size * 2;
+    unsafe { heap::heap_init(heap_start, heap_size) };
 
     pat::pat_init();
     pat::pat_set_write_combining(fb_base as u64, fb_size as u64);

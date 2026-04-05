@@ -15,6 +15,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use alloc::vec::Vec;
 use crate::console::Console;
 use super::parser::Parser;
 use super::token::{TokenKind, TokenLine, tokenize, var_index, upper_name};
@@ -22,20 +23,10 @@ use super::value::{print_f64, format_u64};
 
 const PROGRAM_BUF_SIZE: usize = 16384;
 
-const MAX_LINES: usize = 1000;
-const MAX_LINE_LEN: usize = 256;
-
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 struct ProgramLine {
     number: u16,
-    text: [u8; MAX_LINE_LEN],
-    len: usize,
-}
-
-impl ProgramLine {
-    const fn empty() -> Self {
-        Self { number: 0, text: [0; MAX_LINE_LEN], len: 0 }
-    }
+    text: Vec<u8>,
 }
 
 #[derive(Copy, Clone)]
@@ -46,123 +37,68 @@ struct ForFrame {
     line_idx: usize,
 }
 
-impl ForFrame {
-    const fn empty() -> Self {
-        Self { var_idx: 0, limit: 0.0, step: 1.0, line_idx: 0 }
-    }
-}
-
-const MAX_ARRAYS: usize = 32;
-const MAX_ARRAY_ELEMS: usize = 1024;
-const MAX_STRINGS: usize = 32;
-const MAX_STR_LEN: usize = 256;
-const MAX_DATA: usize = 512;
-const MAX_NAMED_VARS: usize = 64;
-const MAX_VAR_NAME: usize = 16;
-
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 struct NamedVar {
-    name: [u8; MAX_VAR_NAME],
-    name_len: usize,
+    name: Vec<u8>,
     val: f64,
 }
 
-impl NamedVar {
-    const fn empty() -> Self {
-        Self { name: [0; MAX_VAR_NAME], name_len: 0, val: 0.0 }
-    }
-}
-
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub struct Array {
-    name: u8,       // A-Z index (0-25)
+    name: u8,
     dim1: u16,
-    dim2: u16,      // 0 = 1D
-    vals: [f64; MAX_ARRAY_ELEMS],
+    dim2: u16,
+    vals: Vec<f64>,
 }
 
-impl Array {
-    const fn empty() -> Self {
-        Self { name: 0, dim1: 0, dim2: 0, vals: [0.0; MAX_ARRAY_ELEMS] }
-    }
-}
-
-#[derive(Copy, Clone)]
 pub struct StringVar {
-    name: u8,       // A-Z index (0-25)
-    dimmed: bool,
-    buf: [u8; MAX_STR_LEN],
-    len: usize,
+    name: u8,
+    buf: Vec<u8>,
 }
 
-impl StringVar {
-    const fn empty() -> Self {
-        Self { name: 0, dimmed: false, buf: [0; MAX_STR_LEN], len: 0 }
-    }
-}
-
-#[derive(Copy, Clone)]
-struct DataItem {
-    is_string: bool,
-    num_val: f64,
-    str_buf: [u8; 64],
-    str_len: usize,
-}
-
-impl DataItem {
-    const fn empty() -> Self {
-        Self { is_string: false, num_val: 0.0, str_buf: [0; 64], str_len: 0 }
-    }
+enum DataItem {
+    Num(f64),
+    Str(Vec<u8>),
 }
 
 pub struct BasicState {
     pub vars: [f64; 26],
-    lines: [ProgramLine; MAX_LINES],
-    line_count: usize,
+    lines: Vec<ProgramLine>,
     for_stack: [ForFrame; 32],
     for_sp: usize,
     gosub_stack: [usize; 64],
     gosub_sp: usize,
     running: bool,
     pc: usize,
-    arrays: [Array; MAX_ARRAYS],
-    array_count: usize,
-    strings: [StringVar; MAX_STRINGS],
-    string_count: usize,
-    data_store: [DataItem; MAX_DATA],
-    data_count: usize,
+    arrays: Vec<Array>,
+    strings: Vec<StringVar>,
+    data_store: Vec<DataItem>,
     data_ptr: usize,
-    named_vars: [NamedVar; MAX_NAMED_VARS],
-    named_var_count: usize,
+    named_vars: Vec<NamedVar>,
 }
 
 impl BasicState {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             vars: [0.0; 26],
-            lines: [ProgramLine::empty(); MAX_LINES],
-            line_count: 0,
-            for_stack: [ForFrame::empty(); 32],
+            lines: Vec::new(),
+            for_stack: [ForFrame { var_idx: 0, limit: 0.0, step: 1.0, line_idx: 0 }; 32],
             for_sp: 0,
             gosub_stack: [0; 64],
             gosub_sp: 0,
             running: false,
             pc: 0,
-            arrays: [Array::empty(); MAX_ARRAYS],
-            array_count: 0,
-            strings: [StringVar::empty(); MAX_STRINGS],
-            string_count: 0,
-            data_store: [DataItem::empty(); MAX_DATA],
-            data_count: 0,
+            arrays: Vec::new(),
+            strings: Vec::new(),
+            data_store: Vec::new(),
             data_ptr: 0,
-            named_vars: [NamedVar::empty(); MAX_NAMED_VARS],
-            named_var_count: 0,
+            named_vars: Vec::new(),
         }
     }
 
     fn find_line_or_after(&self, number: u16) -> usize {
         let mut lo = 0usize;
-        let mut hi = self.line_count;
+        let mut hi = self.lines.len();
         while lo < hi {
             let mid = (lo + hi) / 2;
             if self.lines[mid].number < number {
@@ -176,7 +112,7 @@ impl BasicState {
 
     fn find_line(&self, number: u16) -> Option<usize> {
         let idx = self.find_line_or_after(number);
-        if idx < self.line_count && self.lines[idx].number == number {
+        if idx < self.lines.len() && self.lines[idx].number == number {
             Some(idx)
         } else {
             None
@@ -193,90 +129,62 @@ impl BasicState {
     pub fn insert_line(&mut self, number: u16, text: &[u8]) {
         if text.is_empty() {
             if let Some(idx) = self.find_line(number) {
-                for i in idx..self.line_count - 1 {
-                    self.lines[i] = self.lines[i + 1];
-                }
-                self.line_count -= 1;
+                self.lines.remove(idx);
             }
             return;
         }
 
         if let Some(idx) = self.find_line(number) {
-            let copy_len = text.len().min(MAX_LINE_LEN);
-            self.lines[idx].text[..copy_len].copy_from_slice(&text[..copy_len]);
-            self.lines[idx].len = copy_len;
-        } else if self.line_count < MAX_LINES {
+            self.lines[idx].text = text.to_vec();
+        } else {
             let pos = self.find_line_or_after(number);
-            for i in (pos..self.line_count).rev() {
-                self.lines[i + 1] = self.lines[i];
-            }
-            self.lines[pos] = ProgramLine::empty();
-            self.lines[pos].number = number;
-            let copy_len = text.len().min(MAX_LINE_LEN);
-            self.lines[pos].text[..copy_len].copy_from_slice(&text[..copy_len]);
-            self.lines[pos].len = copy_len;
-            self.line_count += 1;
+            self.lines.insert(pos, ProgramLine {
+                number,
+                text: text.to_vec(),
+            });
         }
     }
 
     pub fn list(&self, con: &mut Console) {
-        for i in 0..self.line_count {
-            let line = &self.lines[i];
+        for line in &self.lines {
             print_f64(con, line.number as f64);
             con.putchar(b' ');
-            for j in 0..line.len {
-                con.putchar(line.text[j]);
+            for &b in &line.text {
+                con.putchar(b);
             }
             con.putchar(b'\n');
         }
     }
 
     pub fn clear(&mut self) {
-        self.line_count = 0;
+        self.lines.clear();
         self.vars = [0.0; 26];
         self.for_sp = 0;
         self.gosub_sp = 0;
-        self.array_count = 0;
-        self.string_count = 0;
-        self.data_count = 0;
+        self.arrays.clear();
+        self.strings.clear();
+        self.data_store.clear();
         self.data_ptr = 0;
-        self.named_var_count = 0;
+        self.named_vars.clear();
     }
 
     pub fn named_var_get(&self, name: &[u8]) -> f64 {
-        for i in 0..self.named_var_count {
-            let nv = &self.named_vars[i];
-            if nv.name_len == name.len() && nv.name[..nv.name_len] == *name {
-                return nv.val;
-            }
+        for nv in &self.named_vars {
+            if nv.name == name { return nv.val; }
         }
         0.0
     }
 
     pub fn named_var_set(&mut self, name: &[u8], val: f64) {
-        for i in 0..self.named_var_count {
-            let nv = &mut self.named_vars[i];
-            if nv.name_len == name.len() && nv.name[..nv.name_len] == *name {
-                nv.val = val;
-                return;
-            }
+        for nv in &mut self.named_vars {
+            if nv.name == name { nv.val = val; return; }
         }
-        if self.named_var_count < MAX_NAMED_VARS {
-            let nv = &mut self.named_vars[self.named_var_count];
-            let len = name.len().min(MAX_VAR_NAME);
-            nv.name[..len].copy_from_slice(&name[..len]);
-            nv.name_len = len;
-            nv.val = val;
-            self.named_var_count += 1;
-        }
+        self.named_vars.push(NamedVar { name: name.to_vec(), val });
     }
 
     // Array access
     fn array_find(&self, name_idx: usize) -> Option<usize> {
-        for a in 0..self.array_count {
-            if self.arrays[a].name == name_idx as u8 { return Some(a); }
-        }
-        None
+        self.arrays.iter().position(|a| a.name == name_idx as u8)
     }
 
     fn array_flat_index(arr: &Array, i1: usize, i2: usize) -> Result<usize, &'static str> {
@@ -303,22 +211,18 @@ impl BasicState {
     }
 
     pub fn string_get(&self, name_idx: usize) -> &[u8] {
-        for s in 0..self.string_count {
-            if self.strings[s].name == name_idx as u8 {
-                return &self.strings[s].buf[..self.strings[s].len];
+        for sv in &self.strings {
+            if sv.name == name_idx as u8 {
+                return &sv.buf;
             }
         }
         &[]
     }
 
     fn string_set(&mut self, name_idx: usize, val: &[u8]) -> Result<(), &'static str> {
-        for s in 0..self.string_count {
-            if self.strings[s].name == name_idx as u8 {
-                let sv = &mut self.strings[s];
-                if !sv.dimmed { return Err("STRING NOT DIMMED"); }
-                let copy_len = val.len().min(MAX_STR_LEN - 1);
-                sv.buf[..copy_len].copy_from_slice(&val[..copy_len]);
-                sv.len = copy_len;
+        for sv in &mut self.strings {
+            if sv.name == name_idx as u8 {
+                sv.buf = val.to_vec();
                 return Ok(());
             }
         }
@@ -326,36 +230,28 @@ impl BasicState {
     }
 
     fn collect_data(&mut self) {
-        self.data_count = 0;
+        self.data_store.clear();
         self.data_ptr = 0;
-        for i in 0..self.line_count {
-            let line = &self.lines[i];
+        for i in 0..self.lines.len() {
             let mut tl = TokenLine::new();
-            if tokenize(&line.text, line.len, &mut tl).is_err() { continue; }
+            let text = &self.lines[i].text;
+            if tokenize(text, text.len(), &mut tl).is_err() { continue; }
             if tl.count == 0 || tl.get(0).kind != TokenKind::Data { continue; }
             let mut pos = 1;
-            while tl.get(pos).kind != TokenKind::Eol && self.data_count < MAX_DATA {
+            while tl.get(pos).kind != TokenKind::Eol {
                 if tl.get(pos).kind == TokenKind::Comma { pos += 1; continue; }
                 if tl.get(pos).kind == TokenKind::StringLit {
                     let tok = tl.get(pos);
-                    let item = &mut self.data_store[self.data_count];
-                    item.is_string = true;
-                    item.str_len = tok.str_len.min(63);
-                    item.str_buf[..item.str_len].copy_from_slice(&tok.str_buf[..item.str_len]);
-                    self.data_count += 1;
+                    self.data_store.push(DataItem::Str(tok.str_buf[..tok.str_len].to_vec()));
                     pos += 1;
                 } else if tl.get(pos).kind == TokenKind::Minus {
                     pos += 1;
                     if tl.get(pos).kind == TokenKind::Number {
-                        self.data_store[self.data_count].is_string = false;
-                        self.data_store[self.data_count].num_val = -tl.get(pos).num_val;
-                        self.data_count += 1;
+                        self.data_store.push(DataItem::Num(-tl.get(pos).num_val));
                         pos += 1;
                     }
                 } else if tl.get(pos).kind == TokenKind::Number {
-                    self.data_store[self.data_count].is_string = false;
-                    self.data_store[self.data_count].num_val = tl.get(pos).num_val;
-                    self.data_count += 1;
+                    self.data_store.push(DataItem::Num(tl.get(pos).num_val));
                     pos += 1;
                 } else {
                     pos += 1;
@@ -366,16 +262,16 @@ impl BasicState {
 
     pub fn run(&mut self, con: &mut Console) {
         self.vars = [0.0; 26];
-        self.named_var_count = 0;
+        self.named_vars.clear();
         self.for_sp = 0;
         self.gosub_sp = 0;
-        self.array_count = 0;
-        self.string_count = 0;
+        self.arrays.clear();
+        self.strings.clear();
         self.collect_data();
         self.running = true;
         self.pc = 0;
 
-        while self.running && self.pc < self.line_count {
+        while self.running && self.pc < self.lines.len() {
             if crate::interrupts::keybuf_try_read() == Some(27) {
                 con.print("\nBREAK IN ");
                 print_f64(con, self.lines[self.pc].number as f64);
@@ -389,7 +285,7 @@ impl BasicState {
 
             let mut tl = TokenLine::new();
             let line = &self.lines[idx];
-            if tokenize(&line.text, line.len, &mut tl).is_err() {
+            if tokenize(&line.text, line.text.len(), &mut tl).is_err() {
                 self.print_error(con, "SYNTAX ERROR", Some(idx));
                 break;
             }
@@ -406,7 +302,7 @@ impl BasicState {
         con.print("\n? ");
         con.print(msg);
         if let Some(idx) = line_idx {
-            if idx < self.line_count {
+            if idx < self.lines.len() {
                 con.print(" IN ");
                 print_f64(con, self.lines[idx].number as f64);
             }
@@ -707,7 +603,7 @@ impl BasicState {
     fn serialize_program(&self, buf: &mut [u8]) -> usize {
         let mut pos = 0;
         let mut num_buf = [0u8; 20];
-        for i in 0..self.line_count {
+        for i in 0..self.lines.len() {
             let line = &self.lines[i];
             let n = format_u64(line.number as u64, &mut num_buf);
             for j in 0..n {
@@ -715,9 +611,8 @@ impl BasicState {
             }
             // Space
             if pos < buf.len() { buf[pos] = b' '; pos += 1; }
-            // Text
-            for j in 0..line.len {
-                if pos < buf.len() { buf[pos] = line.text[j]; pos += 1; }
+            for &b in &line.text {
+                if pos < buf.len() { buf[pos] = b; pos += 1; }
             }
             // Newline
             if pos < buf.len() { buf[pos] = b'\n'; pos += 1; }
@@ -727,7 +622,7 @@ impl BasicState {
 
     /// Deserialize "linenum text\n" format back into program lines.
     pub fn deserialize_program(&mut self, data: &[u8], len: usize) {
-        self.line_count = 0;
+        self.lines.clear();
 
         let mut i = 0;
         while i < len {
@@ -913,23 +808,12 @@ impl BasicState {
     fn exec_dim(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
         let tok = tl.get(start);
         if tok.kind == TokenKind::StrIdent {
-            // DIM A$(size)
             let idx = var_index(tok)?;
-            let (size, _) = self.parse_comma_arg_or_first(tl, start + 1)?;
-            // Check for duplicate
-            for s in 0..self.string_count {
-                if self.strings[s].name == idx as u8 { return Err("REDIM ERROR"); }
-            }
-            if self.string_count >= MAX_STRINGS { return Err("TOO MANY STRINGS"); }
-            self.strings[self.string_count] = StringVar {
-                name: idx as u8, dimmed: true,
-                buf: [0; MAX_STR_LEN], len: 0,
-            };
-            self.string_count += 1;
-            let _ = size;
+            let (_size, _) = self.parse_comma_arg_or_first(tl, start + 1)?;
+            if self.strings.iter().any(|s| s.name == idx as u8) { return Err("REDIM ERROR"); }
+            self.strings.push(StringVar { name: idx as u8, buf: Vec::new() });
             Ok(())
         } else if tok.kind == TokenKind::Ident {
-            // DIM A(dim1) or DIM A(dim1, dim2)
             let idx = var_index(tok)?;
             if tl.get(start + 1).kind != TokenKind::LParen { return Err("SYNTAX ERROR"); }
             let mut parser = Parser::new(tl, start + 2, &mut self.vars, self as *const _);
@@ -944,13 +828,10 @@ impl BasicState {
             };
             if tl.get(parser.pos).kind != TokenKind::RParen { return Err("SYNTAX ERROR"); }
             let total = if dim2 > 0 { dim1 as usize * dim2 as usize } else { dim1 as usize };
-            if total > MAX_ARRAY_ELEMS { return Err("ARRAY TOO LARGE"); }
             if self.array_find(idx).is_some() { return Err("REDIM ERROR"); }
-            if self.array_count >= MAX_ARRAYS { return Err("TOO MANY ARRAYS"); }
-            self.arrays[self.array_count] = Array {
-                name: idx as u8, dim1, dim2, vals: [0.0; MAX_ARRAY_ELEMS],
-            };
-            self.array_count += 1;
+            self.arrays.push(Array {
+                name: idx as u8, dim1, dim2, vals: alloc::vec![0.0; total],
+            });
             Ok(())
         } else {
             Err("SYNTAX ERROR")
@@ -1037,23 +918,23 @@ impl BasicState {
         let mut pos = start;
         while tl.get(pos).kind != TokenKind::Eol {
             if tl.get(pos).kind == TokenKind::Comma { pos += 1; continue; }
-            if self.data_ptr >= self.data_count { return Err("OUT OF DATA"); }
+            if self.data_ptr >= self.data_store.len() { return Err("OUT OF DATA"); }
 
             if tl.get(pos).kind == TokenKind::StrIdent {
                 let idx = var_index(tl.get(pos))?;
-                let item = &self.data_store[self.data_ptr];
-                if !item.is_string { return Err("TYPE MISMATCH"); }
-                // Copy to local buf to avoid borrowing self.data_store and self.strings simultaneously
-                let len = item.str_len;
-                let mut buf = [0u8; 64];
-                buf[..len].copy_from_slice(&item.str_buf[..len]);
+                // Extract string value before calling string_set (avoids simultaneous borrow)
+                let val = match &self.data_store[self.data_ptr] {
+                    DataItem::Str(s) => s.clone(),
+                    DataItem::Num(_) => return Err("TYPE MISMATCH"),
+                };
                 self.data_ptr += 1;
-                self.string_set(idx, &buf[..len])?;
+                self.string_set(idx, &val)?;
             } else if tl.get(pos).kind == TokenKind::Ident {
                 let tok = tl.get(pos);
-                let item = &self.data_store[self.data_ptr];
-                if item.is_string { return Err("TYPE MISMATCH"); }
-                let val = item.num_val;
+                let val = match &self.data_store[self.data_ptr] {
+                    DataItem::Num(n) => *n,
+                    DataItem::Str(_) => return Err("TYPE MISMATCH"),
+                };
                 self.data_ptr += 1;
                 if tok.str_len > 1 {
                     let mut upper = [0u8; 16];

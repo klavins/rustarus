@@ -53,8 +53,14 @@ fn print_error(con: &mut Console, msg: &str) {
 
 /// Main BASIC REPL — called from main after boot.
 pub fn basic_repl(con: &mut Console) -> ! {
-    static mut STATE: BasicState = BasicState::new();
-    let state = unsafe { &mut *core::ptr::addr_of_mut!(STATE) };
+    // BasicState uses Vec (heap-allocated), so we Box it to keep it on the heap
+    static mut STATE_PTR: *mut BasicState = core::ptr::null_mut();
+    unsafe {
+        if STATE_PTR.is_null() {
+            STATE_PTR = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(BasicState::new()));
+        }
+    }
+    let state = unsafe { &mut *STATE_PTR };
 
     parser::rng_seed();
 
