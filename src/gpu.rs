@@ -132,10 +132,15 @@ fn try_activate(
     // Switch console and graphics to the GPU's framebuffer
     let old_fb = con.fb_addr();
     if fb != old_fb {
+        // Apply write-combining to the new framebuffer region
+        let pitch = gpu_dispatch!(&active, 0, |d| d.pitch());
+        let height = gpu_dispatch!(&active, 0, |d| d.height());
+        if pitch > 0 && height > 0 {
+            crate::pat::pat_set_write_combining(fb as u64, (pitch as u64) * (height as u64) * 2);
+        }
         con.set_fb_addr(fb);
         let gfx = unsafe { crate::graphics::GRAPHICS.get() };
         gfx.set_fb_addr(fb);
-        // Flush current shadow buffer content to the new framebuffer
         con.clear();
     }
 

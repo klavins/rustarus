@@ -430,10 +430,9 @@ impl NvidiaDriver {
             return;
         }
 
-        // Clear pages via GOP (WC fast path)
+        // Clear page 1 only — page 0 has the boot text (via GOP)
         let page_size = (pitch * height) as usize;
         unsafe {
-            ptr::write_bytes(gop_fb, 0, page_size);
             ptr::write_bytes(gop_fb.add(PAGE1_VRAM as usize), 0, page_size);
         }
 

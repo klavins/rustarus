@@ -30,6 +30,7 @@ pub mod graphics;
 mod interrupts;
 pub mod nvidia;
 mod io;
+pub mod pat;
 pub mod pci;
 pub mod speaker;
 pub mod vmware;
@@ -137,6 +138,10 @@ fn main() -> Status {
 
     let shadow = best_base as *mut u8;
     let saved_fb = unsafe { shadow.add(fb_size) };
+
+    // Set up PAT for write-combining and apply to GOP framebuffer
+    pat::pat_init();
+    pat::pat_set_write_combining(fb_base as u64, fb_size as u64);
 
     let con = unsafe { CONSOLE.get() };
     con.init(fb_base, shadow, width as u32, height as u32, pitch as u32);
