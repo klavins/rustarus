@@ -106,8 +106,12 @@ impl Token {
 }
 
 /// Extract A-Z variable index from a single-letter identifier token.
+/// For multi-letter identifiers, returns the first letter's index.
 pub fn var_index(tok: &Token) -> Result<usize, &'static str> {
-    if tok.kind != TokenKind::Ident || tok.str_len != 1 {
+    if tok.kind != TokenKind::Ident && tok.kind != TokenKind::StrIdent {
+        return Err("SYNTAX ERROR");
+    }
+    if tok.str_len == 0 {
         return Err("SYNTAX ERROR");
     }
     let upper = tok.str_buf[0].to_ascii_uppercase();
@@ -116,6 +120,7 @@ pub fn var_index(tok: &Token) -> Result<usize, &'static str> {
     }
     Ok((upper - b'A') as usize)
 }
+
 
 pub struct TokenLine {
     pub tokens: [Token; MAX_TOKENS],
@@ -187,6 +192,7 @@ static KEYWORDS: &[KeywordEntry] = &[
     KeywordEntry { name: b"PAUSE", kind: TokenKind::Pause },
     KeywordEntry { name: b"DELAY", kind: TokenKind::Delay },
     KeywordEntry { name: b"DOS", kind: TokenKind::Dos },
+    KeywordEntry { name: b"MOD", kind: TokenKind::Percent },
     KeywordEntry { name: b"AND", kind: TokenKind::And },
     KeywordEntry { name: b"OR", kind: TokenKind::Or },
     KeywordEntry { name: b"NOT", kind: TokenKind::Not },

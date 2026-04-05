@@ -57,6 +57,21 @@ const MAX_ARRAY_ELEMS: usize = 1024;
 const MAX_STRINGS: usize = 32;
 const MAX_STR_LEN: usize = 256;
 const MAX_DATA: usize = 512;
+const MAX_NAMED_VARS: usize = 64;
+const MAX_VAR_NAME: usize = 16;
+
+#[derive(Copy, Clone)]
+struct NamedVar {
+    name: [u8; MAX_VAR_NAME],
+    name_len: usize,
+    val: f64,
+}
+
+impl NamedVar {
+    const fn empty() -> Self {
+        Self { name: [0; MAX_VAR_NAME], name_len: 0, val: 0.0 }
+    }
+}
 
 #[derive(Copy, Clone)]
 pub struct Array {
@@ -117,6 +132,8 @@ pub struct BasicState {
     data_store: [DataItem; MAX_DATA],
     data_count: usize,
     data_ptr: usize,
+    named_vars: [NamedVar; MAX_NAMED_VARS],
+    named_var_count: usize,
 }
 
 impl BasicState {
@@ -138,6 +155,8 @@ impl BasicState {
             data_store: [DataItem::empty(); MAX_DATA],
             data_count: 0,
             data_ptr: 0,
+            named_vars: [NamedVar::empty(); MAX_NAMED_VARS],
+            named_var_count: 0,
         }
     }
 
@@ -221,6 +240,35 @@ impl BasicState {
         self.string_count = 0;
         self.data_count = 0;
         self.data_ptr = 0;
+        self.named_var_count = 0;
+    }
+
+    pub fn named_var_get(&self, name: &[u8]) -> f64 {
+        for i in 0..self.named_var_count {
+            let nv = &self.named_vars[i];
+            if nv.name_len == name.len() && nv.name[..nv.name_len] == *name {
+                return nv.val;
+            }
+        }
+        0.0
+    }
+
+    pub fn named_var_set(&mut self, name: &[u8], val: f64) {
+        for i in 0..self.named_var_count {
+            let nv = &mut self.named_vars[i];
+            if nv.name_len == name.len() && nv.name[..nv.name_len] == *name {
+                nv.val = val;
+                return;
+            }
+        }
+        if self.named_var_count < MAX_NAMED_VARS {
+            let nv = &mut self.named_vars[self.named_var_count];
+            let len = name.len().min(MAX_VAR_NAME);
+            nv.name[..len].copy_from_slice(&name[..len]);
+            nv.name_len = len;
+            nv.val = val;
+            self.named_var_count += 1;
+        }
     }
 
     // Array access
@@ -254,7 +302,7 @@ impl BasicState {
         Ok(())
     }
 
-    fn string_get(&self, name_idx: usize) -> &[u8] {
+    pub fn string_get(&self, name_idx: usize) -> &[u8] {
         for s in 0..self.string_count {
             if self.strings[s].name == name_idx as u8 {
                 return &self.strings[s].buf[..self.strings[s].len];
@@ -318,6 +366,7 @@ impl BasicState {
 
     pub fn run(&mut self, con: &mut Console) {
         self.vars = [0.0; 26];
+        self.named_var_count = 0;
         self.for_sp = 0;
         self.gosub_sp = 0;
         self.array_count = 0;
@@ -378,6 +427,13 @@ impl BasicState {
 
         match tl.get(start).kind {
             TokenKind::Print => self.exec_print(tl, start + 1, con),
+            TokenKind::Let if tl.get(start + 1).kind == TokenKind::StrIdent => {
+                self.exec_string_let(tl, start + 1)
+            }
+            TokenKind::Let if tl.get(start + 1).kind == TokenKind::Ident
+                && tl.get(start + 2).kind == TokenKind::LParen => {
+                self.exec_array_let(tl, start + 1)
+            }
             TokenKind::Let => self.exec_let(tl, start + 1),
             TokenKind::If => self.exec_if(tl, start + 1, con),
             TokenKind::For => self.exec_for(tl, start + 1),
@@ -475,13 +531,22 @@ impl BasicState {
     }
 
     fn exec_let(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
-        let idx = var_index(tl.get(start))?;
+        let tok = tl.get(start);
         if tl.get(start + 1).kind != TokenKind::Eq {
             return Err("SYNTAX ERROR");
         }
-        let mut parser = Parser::new(tl,start + 2, &mut self.vars, self as *const _);
+        let mut parser = Parser::new(tl, start + 2, &mut self.vars, self as *const _);
         let val = parser.parse_condition()?;
-        self.vars[idx] = val;
+        if tok.str_len > 1 {
+            // Multi-letter variable
+            let mut upper = [0u8; 16];
+            let len = tok.str_len.min(16);
+            for i in 0..len { upper[i] = tok.str_buf[i].to_ascii_uppercase(); }
+            self.named_var_set(&upper[..len], val);
+        } else {
+            let idx = var_index(tok)?;
+            self.vars[idx] = val;
+        }
         Ok(())
     }
 

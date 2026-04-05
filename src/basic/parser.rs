@@ -182,13 +182,36 @@ impl<'a> Parser<'a> {
             TokenKind::Ident => {
                 let tok = self.tl.get(self.pos);
 
-                // Check for built-in functions
-                if let Some(f) = match_builtin(&tok.str_buf[..tok.str_len]) {
+                // LEN(A$) — string length function
+                if tok.str_len == 3 && tok.str_buf[0].to_ascii_uppercase() == b'L'
+                    && tok.str_buf[1].to_ascii_uppercase() == b'E'
+                    && tok.str_buf[2].to_ascii_uppercase() == b'N'
+                {
                     self.advance();
                     self.expect(TokenKind::LParen)?;
+                    if self.kind() == TokenKind::StrIdent {
+                        let stok = self.tl.get(self.pos);
+                        let idx = var_index(stok)?;
+                        self.advance();
+                        self.expect(TokenKind::RParen)?;
+                        let state = unsafe { &*self.state };
+                        return Ok(state.string_get(idx).len() as f64);
+                    }
+                    // Fallback: numeric LEN (not meaningful, but don't crash)
                     let arg = self.parse_condition()?;
                     self.expect(TokenKind::RParen)?;
-                    return f(arg);
+                    return Ok(arg);
+                }
+
+                // Check for built-in functions (only if followed by parenthesis)
+                if self.tl.get(self.pos + 1).kind == TokenKind::LParen {
+                    if let Some(f) = match_builtin(&tok.str_buf[..tok.str_len]) {
+                        self.advance();
+                        self.expect(TokenKind::LParen)?;
+                        let arg = self.parse_condition()?;
+                        self.expect(TokenKind::RParen)?;
+                        return f(arg);
+                    }
                 }
 
                 // Built-in constants: SCRW, SCRH
@@ -197,6 +220,31 @@ impl<'a> Parser<'a> {
                     return Ok(val);
                 }
 
+                // Multi-letter named variable (PASS, TEST, SCORE, etc.)
+                if tok.str_len > 1 {
+                    self.advance();
+                    // Check array access for multi-letter names
+                    if self.kind() == TokenKind::LParen {
+                        let idx = var_index(tok)?;
+                        self.advance();
+                        let i1 = self.parse_condition()? as usize;
+                        let i2 = if self.kind() == TokenKind::Comma {
+                            self.advance();
+                            self.parse_condition()? as usize
+                        } else { 0 };
+                        self.expect(TokenKind::RParen)?;
+                        let state = unsafe { &*self.state };
+                        return state.array_get(idx, i1, i2);
+                    }
+                    let state = unsafe { &*self.state };
+                    // Uppercase the name for case-insensitive lookup
+                    let mut upper = [0u8; 16];
+                    let len = tok.str_len.min(16);
+                    for i in 0..len { upper[i] = tok.str_buf[i].to_ascii_uppercase(); }
+                    return Ok(state.named_var_get(&upper[..len]));
+                }
+
+                // Single-letter variable A-Z
                 let idx = var_index(tok)?;
                 self.advance();
 
@@ -207,9 +255,7 @@ impl<'a> Parser<'a> {
                     let i2 = if self.kind() == TokenKind::Comma {
                         self.advance();
                         self.parse_condition()? as usize
-                    } else {
-                        0
-                    };
+                    } else { 0 };
                     self.expect(TokenKind::RParen)?;
                     let state = unsafe { &*self.state };
                     return state.array_get(idx, i1, i2);
@@ -245,35 +291,39 @@ fn match_builtin(name: &[u8]) -> Option<fn(f64) -> Result<f64, &'static str>> {
             let byte = unsafe { core::ptr::read_volatile(addr as usize as *const u8) };
             Ok(byte as f64)
         }),
-        (3, b"LEN") => Some(|_| Ok(0.0)), // placeholder — string LEN needs string arg
+        (3, b"SIN") => Some(|n| Ok(sin_approx(n))),
+        (3, b"COS") => Some(|n| Ok(cos_approx(n))),
         _ => None,
     }
 }
 
 fn match_builtin_const(name: &[u8]) -> Option<f64> {
-    if name.len() != 4 {
+    if name.len() < 2 || name.len() > 4 {
         return None;
     }
     let mut upper = [0u8; 4];
-    for i in 0..4 {
+    let len = name.len().min(4);
+    for i in 0..len {
         upper[i] = name[i].to_ascii_uppercase();
     }
+    match (name.len(), &upper[..name.len()]) {
+        (2, b"PI") => return Some(core::f64::consts::PI),
+        (3, b"RND") => {
+            let r = rng_next();
+            return Some(r as f64 / 32768.0);
+        }
+        _ => {}
+    }
+    // SCRW/SCRH need 4-letter match
+    if name.len() != 4 { return None; }
     match &upper {
         b"SCRW" => {
             let gfx = unsafe { crate::graphics::GRAPHICS.get() };
-            if gfx.mode() >= 2 {
-                Some(gfx.virt_width() as f64)
-            } else {
-                Some(0.0)
-            }
+            Some(gfx.virt_width() as f64)
         }
         b"SCRH" => {
             let gfx = unsafe { crate::graphics::GRAPHICS.get() };
-            if gfx.mode() >= 2 {
-                Some(gfx.virt_height() as f64)
-            } else {
-                Some(0.0)
-            }
+            Some(gfx.virt_height() as f64)
         }
         _ => None,
     }
@@ -288,4 +338,26 @@ fn sqrt_approx(val: f64) -> f64 {
         guess = next;
     }
     guess
+}
+
+/// Taylor series sin approximation (no libm in no_std)
+fn sin_approx(x: f64) -> f64 {
+    // Reduce to [-PI, PI]
+    let pi = core::f64::consts::PI;
+    let mut a = x % (2.0 * pi);
+    if a > pi { a -= 2.0 * pi; }
+    if a < -pi { a += 2.0 * pi; }
+    // Taylor series: x - x^3/6 + x^5/120 - x^7/5040 + x^9/362880
+    let x2 = a * a;
+    let mut term = a;
+    let mut sum = a;
+    for i in 1..10 {
+        term *= -x2 / ((2 * i) as f64 * (2 * i + 1) as f64);
+        sum += term;
+    }
+    sum
+}
+
+fn cos_approx(x: f64) -> f64 {
+    sin_approx(x + core::f64::consts::FRAC_PI_2)
 }

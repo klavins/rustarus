@@ -100,11 +100,11 @@ impl Graphics {
     }
 
     pub fn virt_width(&self) -> u32 {
-        self.virt_width
+        if self.virt_width > 0 { self.virt_width } else { self.fb_width }
     }
 
     pub fn virt_height(&self) -> u32 {
-        self.virt_height
+        if self.virt_height > 0 { self.virt_height } else { self.fb_height }
     }
 
     fn setup_virtual_res(&mut self, mode: u8) {
@@ -148,7 +148,10 @@ impl Graphics {
             self.clear_buffer();
             self.present();
         } else if was_graphics && !will_be_graphics {
-            // Graphics → Text: restore text screen
+            // Graphics → Text: restore text screen, reset virtual resolution
+            self.virt_width = 0;
+            self.virt_height = 0;
+            self.pixel_scale = 1;
             if !self.saved_fb.is_null() && !self.shadow.is_null() {
                 unsafe {
                     ptr::copy_nonoverlapping(self.saved_fb, self.shadow, self.fb_size as usize);
