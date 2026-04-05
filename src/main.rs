@@ -18,6 +18,7 @@
 #![no_std]
 #![no_main]
 
+pub mod ahci;
 mod ata;
 mod basic;
 pub mod bga;
@@ -160,6 +161,7 @@ fn main() -> Status {
     con.print("\n");
 
     gpu::gpu_init(con, fb_base, width as u32, height as u32, pitch as u32);
+    ata::ata_init();
 
     unsafe { interrupts::init() };
 
