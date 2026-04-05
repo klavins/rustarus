@@ -15,10 +15,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use crate::ata::SECTOR_SIZE;
 use crate::pci::{pci_find_device, pci_read_bar, pci_enable_device};
 use core::ptr;
-
-const SECTOR_SIZE: usize = 512;
 const AHCI_MAX_PORTS: usize = 32;
 
 // ATA commands
@@ -111,22 +110,20 @@ fn cmd_tbl_ptr(port: usize) -> *mut u8 {
     unsafe { dma_base().add(port * 2048 + 1024 + 256) }
 }
 
-fn port_stop(port: usize) {
-    let mut cmd = port_read(port, 0x18); // CMD register
+fn port_stop(port: usize) -> bool {
+    let mut cmd = port_read(port, 0x18);
     cmd &= !HBA_PORT_CMD_ST;
     cmd &= !HBA_PORT_CMD_FRE;
     port_write(port, 0x18, cmd);
-    // Wait for FR and CR to clear
     for _ in 0..100000u32 {
-        let cmd = port_read(port, 0x18);
-        if cmd & (HBA_PORT_CMD_FR | HBA_PORT_CMD_CR) == 0 {
-            break;
+        if port_read(port, 0x18) & (HBA_PORT_CMD_FR | HBA_PORT_CMD_CR) == 0 {
+            return true;
         }
     }
+    false
 }
 
 fn port_start(port: usize) {
-    // Wait for CR to clear
     for _ in 0..100000u32 {
         if port_read(port, 0x18) & HBA_PORT_CMD_CR == 0 { break; }
     }
@@ -134,8 +131,8 @@ fn port_start(port: usize) {
     port_write(port, 0x18, cmd | HBA_PORT_CMD_FRE | HBA_PORT_CMD_ST);
 }
 
-fn init_port(port: usize) {
-    port_stop(port);
+fn init_port(port: usize) -> bool {
+    if !port_stop(port) { return false; }
 
     // Command list
     let cl = cmd_list_ptr(port);
@@ -167,6 +164,7 @@ fn init_port(port: usize) {
     port_write(port, 0x10, 0xFFFFFFFF); // IS
 
     port_start(port);
+    true
 }
 
 fn port_wait(port: usize, timeout: u32) -> bool {
@@ -183,10 +181,14 @@ fn port_wait(port: usize, timeout: u32) -> bool {
 }
 
 fn issue_cmd(port: usize, command: u8, lba: u64, write: bool) -> bool {
-    // Wait for device not busy
+    let mut ready = false;
     for _ in 0..100000u32 {
-        if port_read(port, 0x20) & (ATA_DEV_BUSY | ATA_DEV_DRQ) == 0 { break; }
+        if port_read(port, 0x20) & (ATA_DEV_BUSY | ATA_DEV_DRQ) == 0 {
+            ready = true;
+            break;
+        }
     }
+    if !ready { return false; }
 
     let cl = cmd_list_ptr(port) as *mut u32;
     let ct = cmd_tbl_ptr(port);
@@ -212,19 +214,18 @@ fn issue_cmd(port: usize, command: u8, lba: u64, write: bool) -> bool {
         // Build FIS_REG_H2D at offset 0 of command table
         let fis = ct;
         ptr::write_bytes(fis, 0, 20);
-        *fis.add(0) = FIS_TYPE_REG_H2D;
-        *fis.add(1) = 0x80; // Command flag
-        *fis.add(2) = command;
-        *fis.add(3) = 0;    // Feature low
-        *fis.add(4) = (lba & 0xFF) as u8;
-        *fis.add(5) = ((lba >> 8) & 0xFF) as u8;
-        *fis.add(6) = ((lba >> 16) & 0xFF) as u8;
-        *fis.add(7) = 1 << 6; // LBA mode
-        *fis.add(8) = ((lba >> 24) & 0xFF) as u8;
-        *fis.add(9) = ((lba >> 32) & 0xFF) as u8;
-        *fis.add(10) = ((lba >> 40) & 0xFF) as u8;
-        // count = 1 at offset 12 (little-endian u16)
-        *(fis.add(12) as *mut u16) = 1;
+        ptr::write_volatile(fis.add(0), FIS_TYPE_REG_H2D);
+        ptr::write_volatile(fis.add(1), 0x80);
+        ptr::write_volatile(fis.add(2), command);
+        ptr::write_volatile(fis.add(3), 0);
+        ptr::write_volatile(fis.add(4), (lba & 0xFF) as u8);
+        ptr::write_volatile(fis.add(5), ((lba >> 8) & 0xFF) as u8);
+        ptr::write_volatile(fis.add(6), ((lba >> 16) & 0xFF) as u8);
+        ptr::write_volatile(fis.add(7), 1 << 6); // LBA mode
+        ptr::write_volatile(fis.add(8), ((lba >> 24) & 0xFF) as u8);
+        ptr::write_volatile(fis.add(9), ((lba >> 32) & 0xFF) as u8);
+        ptr::write_volatile(fis.add(10), ((lba >> 40) & 0xFF) as u8);
+        ptr::write_volatile(fis.add(12) as *mut u16, 1); // count = 1
 
         // Issue command slot 0
         port_write(port, 0x38, 1); // CI = bit 0
@@ -295,7 +296,6 @@ pub fn ahci_read_sector(lba: u32, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), &'s
     if port < 0 { return Err("NO DISK"); }
     let p = port as usize;
 
-    unsafe { ptr::write_bytes(sbuf(), 0, SECTOR_SIZE); }
     if !issue_cmd(p, ATA_CMD_READ_DMA_EX, lba as u64, false) {
         return Err("DISK ERROR");
     }

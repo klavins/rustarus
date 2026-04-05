@@ -126,6 +126,7 @@ impl NvidiaDriver {
     }
 
     fn core_push(&mut self, method: u32, data: u32) {
+        if (self.core_pb_put as usize) + 8 > PB_SIZE { return; }
         let off = (self.core_pb_put / 4) as usize;
         unsafe {
             ptr::write_volatile(self.core_pb.add(off), core_hdr(1, method));
@@ -148,6 +149,7 @@ impl NvidiaDriver {
     }
 
     fn win_push(&mut self, method: u32, data: u32) {
+        if (self.win_pb_put as usize) + 8 > PB_SIZE { return; }
         let off = (self.win_pb_put / 4) as usize;
         unsafe {
             ptr::write_volatile(self.win_pb.add(off), win_hdr(1, method));
@@ -157,6 +159,8 @@ impl NvidiaDriver {
     }
 
     fn win_push_multi(&mut self, base_method: u32, data: &[u32]) {
+        let needed = 4 + data.len() * 4;
+        if (self.win_pb_put as usize) + needed > PB_SIZE { return; }
         let off = (self.win_pb_put / 4) as usize;
         unsafe {
             ptr::write_volatile(self.win_pb.add(off), win_hdr(data.len() as u32, base_method));
@@ -164,7 +168,7 @@ impl NvidiaDriver {
                 ptr::write_volatile(self.win_pb.add(off + 1 + i), val);
             }
         }
-        self.win_pb_put += 4 + data.len() as u32 * 4;
+        self.win_pb_put += needed as u32;
     }
 
     fn win_kick(&self) {
