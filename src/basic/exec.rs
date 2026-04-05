@@ -52,6 +52,54 @@ impl ForFrame {
     }
 }
 
+const MAX_ARRAYS: usize = 32;
+const MAX_ARRAY_ELEMS: usize = 1024;
+const MAX_STRINGS: usize = 32;
+const MAX_STR_LEN: usize = 256;
+const MAX_DATA: usize = 512;
+
+#[derive(Copy, Clone)]
+pub struct Array {
+    name: u8,       // A-Z index (0-25)
+    dim1: u16,
+    dim2: u16,      // 0 = 1D
+    vals: [f64; MAX_ARRAY_ELEMS],
+}
+
+impl Array {
+    const fn empty() -> Self {
+        Self { name: 0, dim1: 0, dim2: 0, vals: [0.0; MAX_ARRAY_ELEMS] }
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct StringVar {
+    name: u8,       // A-Z index (0-25)
+    dimmed: bool,
+    buf: [u8; MAX_STR_LEN],
+    len: usize,
+}
+
+impl StringVar {
+    const fn empty() -> Self {
+        Self { name: 0, dimmed: false, buf: [0; MAX_STR_LEN], len: 0 }
+    }
+}
+
+#[derive(Copy, Clone)]
+struct DataItem {
+    is_string: bool,
+    num_val: f64,
+    str_buf: [u8; 64],
+    str_len: usize,
+}
+
+impl DataItem {
+    const fn empty() -> Self {
+        Self { is_string: false, num_val: 0.0, str_buf: [0; 64], str_len: 0 }
+    }
+}
+
 pub struct BasicState {
     pub vars: [f64; 26],
     lines: [ProgramLine; MAX_LINES],
@@ -62,6 +110,13 @@ pub struct BasicState {
     gosub_sp: usize,
     running: bool,
     pc: usize,
+    arrays: [Array; MAX_ARRAYS],
+    array_count: usize,
+    strings: [StringVar; MAX_STRINGS],
+    string_count: usize,
+    data_store: [DataItem; MAX_DATA],
+    data_count: usize,
+    data_ptr: usize,
 }
 
 impl BasicState {
@@ -76,6 +131,13 @@ impl BasicState {
             gosub_sp: 0,
             running: false,
             pc: 0,
+            arrays: [Array::empty(); MAX_ARRAYS],
+            array_count: 0,
+            strings: [StringVar::empty(); MAX_STRINGS],
+            string_count: 0,
+            data_store: [DataItem::empty(); MAX_DATA],
+            data_count: 0,
+            data_ptr: 0,
         }
     }
 
@@ -155,12 +217,112 @@ impl BasicState {
         self.vars = [0.0; 26];
         self.for_sp = 0;
         self.gosub_sp = 0;
+        self.array_count = 0;
+        self.string_count = 0;
+        self.data_count = 0;
+        self.data_ptr = 0;
+    }
+
+    // Array access
+    fn array_find(&self, name_idx: usize) -> Option<usize> {
+        for a in 0..self.array_count {
+            if self.arrays[a].name == name_idx as u8 { return Some(a); }
+        }
+        None
+    }
+
+    fn array_flat_index(arr: &Array, i1: usize, i2: usize) -> Result<usize, &'static str> {
+        if arr.dim2 > 0 {
+            if i1 >= arr.dim1 as usize || i2 >= arr.dim2 as usize { return Err("BAD SUBSCRIPT"); }
+            Ok(i1 * arr.dim2 as usize + i2)
+        } else {
+            if i1 >= arr.dim1 as usize { return Err("BAD SUBSCRIPT"); }
+            Ok(i1)
+        }
+    }
+
+    pub fn array_get(&self, name_idx: usize, i1: usize, i2: usize) -> Result<f64, &'static str> {
+        let a = self.array_find(name_idx).ok_or("ARRAY NOT DIMMED")?;
+        let idx = Self::array_flat_index(&self.arrays[a], i1, i2)?;
+        Ok(self.arrays[a].vals[idx])
+    }
+
+    fn array_set(&mut self, name_idx: usize, i1: usize, i2: usize, val: f64) -> Result<(), &'static str> {
+        let a = self.array_find(name_idx).ok_or("ARRAY NOT DIMMED")?;
+        let idx = Self::array_flat_index(&self.arrays[a], i1, i2)?;
+        self.arrays[a].vals[idx] = val;
+        Ok(())
+    }
+
+    fn string_get(&self, name_idx: usize) -> &[u8] {
+        for s in 0..self.string_count {
+            if self.strings[s].name == name_idx as u8 {
+                return &self.strings[s].buf[..self.strings[s].len];
+            }
+        }
+        &[]
+    }
+
+    fn string_set(&mut self, name_idx: usize, val: &[u8]) -> Result<(), &'static str> {
+        for s in 0..self.string_count {
+            if self.strings[s].name == name_idx as u8 {
+                let sv = &mut self.strings[s];
+                if !sv.dimmed { return Err("STRING NOT DIMMED"); }
+                let copy_len = val.len().min(MAX_STR_LEN - 1);
+                sv.buf[..copy_len].copy_from_slice(&val[..copy_len]);
+                sv.len = copy_len;
+                return Ok(());
+            }
+        }
+        Err("STRING NOT DIMMED")
+    }
+
+    fn collect_data(&mut self) {
+        self.data_count = 0;
+        self.data_ptr = 0;
+        for i in 0..self.line_count {
+            let line = &self.lines[i];
+            let mut tl = TokenLine::new();
+            if tokenize(&line.text, line.len, &mut tl).is_err() { continue; }
+            if tl.count == 0 || tl.get(0).kind != TokenKind::Data { continue; }
+            let mut pos = 1;
+            while tl.get(pos).kind != TokenKind::Eol && self.data_count < MAX_DATA {
+                if tl.get(pos).kind == TokenKind::Comma { pos += 1; continue; }
+                if tl.get(pos).kind == TokenKind::StringLit {
+                    let tok = tl.get(pos);
+                    let item = &mut self.data_store[self.data_count];
+                    item.is_string = true;
+                    item.str_len = tok.str_len.min(63);
+                    item.str_buf[..item.str_len].copy_from_slice(&tok.str_buf[..item.str_len]);
+                    self.data_count += 1;
+                    pos += 1;
+                } else if tl.get(pos).kind == TokenKind::Minus {
+                    pos += 1;
+                    if tl.get(pos).kind == TokenKind::Number {
+                        self.data_store[self.data_count].is_string = false;
+                        self.data_store[self.data_count].num_val = -tl.get(pos).num_val;
+                        self.data_count += 1;
+                        pos += 1;
+                    }
+                } else if tl.get(pos).kind == TokenKind::Number {
+                    self.data_store[self.data_count].is_string = false;
+                    self.data_store[self.data_count].num_val = tl.get(pos).num_val;
+                    self.data_count += 1;
+                    pos += 1;
+                } else {
+                    pos += 1;
+                }
+            }
+        }
     }
 
     pub fn run(&mut self, con: &mut Console) {
         self.vars = [0.0; 26];
         self.for_sp = 0;
         self.gosub_sp = 0;
+        self.array_count = 0;
+        self.string_count = 0;
+        self.collect_data();
         self.running = true;
         self.pc = 0;
 
@@ -247,8 +409,29 @@ impl BasicState {
                 con.print(" SHUTTING DOWN...\n");
                 crate::shutdown();
             }
+            TokenKind::Dim => self.exec_dim(tl, start + 1),
+            TokenKind::On => self.exec_on(tl, start + 1),
+            TokenKind::Data => Ok(()), // DATA is collected at RUN start, skip during execution
+            TokenKind::Read => self.exec_read(tl, start + 1),
+            TokenKind::Restore => { self.data_ptr = 0; Ok(()) }
+            TokenKind::Poke => self.exec_poke(tl, start + 1),
+            TokenKind::Pause => {
+                crate::interrupts::keybuf_read_blocking();
+                Ok(())
+            }
+            TokenKind::Delay => self.exec_delay(tl, start + 1),
+            TokenKind::Dos => { self.exec_dos(con); Ok(()) }
+            // Bare assignment: A = 5
             TokenKind::Ident if tl.get(start + 1).kind == TokenKind::Eq => {
                 self.exec_let(tl, start)
+            }
+            // Array assignment: A(i) = expr
+            TokenKind::Ident if tl.get(start + 1).kind == TokenKind::LParen => {
+                self.exec_array_let(tl, start)
+            }
+            // String assignment: A$ = "hello"
+            TokenKind::StrIdent if tl.get(start + 1).kind == TokenKind::Eq => {
+                self.exec_string_let(tl, start)
             }
             _ => Err("SYNTAX ERROR"),
         }
@@ -266,12 +449,18 @@ impl BasicState {
                     print_token_str(con, tl.get(pos));
                     pos += 1;
                 }
+                TokenKind::StrIdent => {
+                    let idx = var_index(tl.get(pos))?;
+                    let s = self.string_get(idx);
+                    for &b in s { con.putchar(b); }
+                    pos += 1;
+                }
                 TokenKind::Semicolon | TokenKind::Comma => {
                     suppress_newline = true;
                     pos += 1;
                 }
                 _ => {
-                    let mut parser = Parser::new(tl, pos, &mut self.vars);
+                    let mut parser = Parser::new(tl,pos, &mut self.vars, self as *const _);
                     let val = parser.parse_condition()?;
                     pos = parser.pos;
                     print_f64(con, val);
@@ -290,14 +479,14 @@ impl BasicState {
         if tl.get(start + 1).kind != TokenKind::Eq {
             return Err("SYNTAX ERROR");
         }
-        let mut parser = Parser::new(tl, start + 2, &mut self.vars);
+        let mut parser = Parser::new(tl,start + 2, &mut self.vars, self as *const _);
         let val = parser.parse_condition()?;
         self.vars[idx] = val;
         Ok(())
     }
 
     fn exec_if(&mut self, tl: &TokenLine, start: usize, con: &mut Console) -> Result<(), &'static str> {
-        let mut parser = Parser::new(tl, start, &mut self.vars);
+        let mut parser = Parser::new(tl,start, &mut self.vars, self as *const _);
         let cond = parser.parse_condition()?;
         let pos = parser.pos;
 
@@ -322,7 +511,7 @@ impl BasicState {
             return Err("SYNTAX ERROR");
         }
 
-        let mut parser = Parser::new(tl, start + 2, &mut self.vars);
+        let mut parser = Parser::new(tl,start + 2, &mut self.vars, self as *const _);
         let start_val = parser.parse_expr()?;
         let mut pos = parser.pos;
 
@@ -331,12 +520,12 @@ impl BasicState {
         }
         pos += 1;
 
-        let mut parser = Parser::new(tl, pos, &mut self.vars);
+        let mut parser = Parser::new(tl,pos, &mut self.vars, self as *const _);
         let limit = parser.parse_expr()?;
         pos = parser.pos;
 
         let step = if tl.get(pos).kind == TokenKind::Step {
-            let mut parser = Parser::new(tl, pos + 1, &mut self.vars);
+            let mut parser = Parser::new(tl,pos + 1, &mut self.vars, self as *const _);
             parser.parse_expr()?
         } else {
             1.0
@@ -396,7 +585,7 @@ impl BasicState {
     }
 
     fn exec_goto(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
-        let mut parser = Parser::new(tl, start, &mut self.vars);
+        let mut parser = Parser::new(tl,start, &mut self.vars, self as *const _);
         let linenum = parser.parse_expr()? as u16;
         self.jump_to_line(linenum)
     }
@@ -405,7 +594,7 @@ impl BasicState {
         if self.gosub_sp >= self.gosub_stack.len() {
             return Err("GOSUB OVERFLOW");
         }
-        let mut parser = Parser::new(tl, start, &mut self.vars);
+        let mut parser = Parser::new(tl,start, &mut self.vars, self as *const _);
         let linenum = parser.parse_expr()? as u16;
         self.gosub_stack[self.gosub_sp] = self.pc;
         self.gosub_sp += 1;
@@ -560,19 +749,19 @@ impl BasicState {
     }
 
     fn parse_xy(&mut self, tl: &TokenLine, start: usize) -> Result<(i32, i32, usize), &'static str> {
-        let mut parser = Parser::new(tl, start, &mut self.vars);
+        let mut parser = Parser::new(tl,start, &mut self.vars, self as *const _);
         let x = parser.parse_expr()? as i32;
         let pos = parser.pos;
         if tl.get(pos).kind != TokenKind::Comma {
             return Err("SYNTAX ERROR");
         }
-        let mut parser = Parser::new(tl, pos + 1, &mut self.vars);
+        let mut parser = Parser::new(tl,pos + 1, &mut self.vars, self as *const _);
         let y = parser.parse_expr()? as i32;
         Ok((x, y, parser.pos))
     }
 
     fn exec_graphics(&mut self, tl: &TokenLine, start: usize, con: &mut Console) -> Result<(), &'static str> {
-        let mut parser = Parser::new(tl, start, &mut self.vars);
+        let mut parser = Parser::new(tl,start, &mut self.vars, self as *const _);
         let mode = parser.parse_expr()? as u8;
         Self::gfx().set_mode(mode, con);
         Ok(())
@@ -597,7 +786,7 @@ impl BasicState {
     }
 
     fn exec_color(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
-        let mut parser = Parser::new(tl, start, &mut self.vars);
+        let mut parser = Parser::new(tl,start, &mut self.vars, self as *const _);
         let idx = parser.parse_expr()? as u8;
         Self::gfx().set_color(idx);
         Ok(())
@@ -614,7 +803,7 @@ impl BasicState {
         if tok.kind == TokenKind::StringLit {
             Self::gfx().text(&tok.str_buf[..tok.str_len]);
         } else {
-            let mut parser = Parser::new(tl, start, &mut self.vars);
+            let mut parser = Parser::new(tl,start, &mut self.vars, self as *const _);
             let val = parser.parse_expr()?;
             let mut buf = [0u8; 32];
             let len = super::value::format_f64(val, &mut buf);
@@ -628,7 +817,7 @@ impl BasicState {
         if tl.get(pos).kind != TokenKind::Comma {
             return Err("SYNTAX ERROR");
         }
-        let mut parser = Parser::new(tl, pos + 1, &mut self.vars);
+        let mut parser = Parser::new(tl,pos + 1, &mut self.vars, self as *const _);
         let val = parser.parse_expr()?;
         Ok((val, parser.pos))
     }
@@ -636,7 +825,7 @@ impl BasicState {
     fn exec_sound(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
         // SOUND voice, pitch, distortion, volume
         // Voice and distortion are parsed but ignored (PC speaker only)
-        let mut parser = Parser::new(tl, start, &mut self.vars);
+        let mut parser = Parser::new(tl,start, &mut self.vars, self as *const _);
         let _voice = parser.parse_expr()?;
         let pos = parser.pos;
         let (pitch, pos) = self.parse_comma_arg(tl, pos)?;
@@ -651,6 +840,259 @@ impl BasicState {
         }
         Ok(())
     }
+
+    fn exec_dim(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
+        let tok = tl.get(start);
+        if tok.kind == TokenKind::StrIdent {
+            // DIM A$(size)
+            let idx = var_index(tok)?;
+            let (size, _) = self.parse_comma_arg_or_first(tl, start + 1)?;
+            // Check for duplicate
+            for s in 0..self.string_count {
+                if self.strings[s].name == idx as u8 { return Err("REDIM ERROR"); }
+            }
+            if self.string_count >= MAX_STRINGS { return Err("TOO MANY STRINGS"); }
+            self.strings[self.string_count] = StringVar {
+                name: idx as u8, dimmed: true,
+                buf: [0; MAX_STR_LEN], len: 0,
+            };
+            self.string_count += 1;
+            let _ = size;
+            Ok(())
+        } else if tok.kind == TokenKind::Ident {
+            // DIM A(dim1) or DIM A(dim1, dim2)
+            let idx = var_index(tok)?;
+            if tl.get(start + 1).kind != TokenKind::LParen { return Err("SYNTAX ERROR"); }
+            let mut parser = Parser::new(tl, start + 2, &mut self.vars, self as *const _);
+            let dim1 = parser.parse_expr()? as u16;
+            let dim2 = if tl.get(parser.pos).kind == TokenKind::Comma {
+                let mut p2 = Parser::new(tl, parser.pos + 1, &mut self.vars, self as *const _);
+                let d = p2.parse_expr()? as u16;
+                parser.pos = p2.pos;
+                d
+            } else {
+                0
+            };
+            if tl.get(parser.pos).kind != TokenKind::RParen { return Err("SYNTAX ERROR"); }
+            let total = if dim2 > 0 { dim1 as usize * dim2 as usize } else { dim1 as usize };
+            if total > MAX_ARRAY_ELEMS { return Err("ARRAY TOO LARGE"); }
+            if self.array_find(idx).is_some() { return Err("REDIM ERROR"); }
+            if self.array_count >= MAX_ARRAYS { return Err("TOO MANY ARRAYS"); }
+            self.arrays[self.array_count] = Array {
+                name: idx as u8, dim1, dim2, vals: [0.0; MAX_ARRAY_ELEMS],
+            };
+            self.array_count += 1;
+            Ok(())
+        } else {
+            Err("SYNTAX ERROR")
+        }
+    }
+
+    fn parse_comma_arg_or_first(&mut self, tl: &TokenLine, start: usize) -> Result<(f64, usize), &'static str> {
+        // Handle optional ( before value
+        let pos = if tl.get(start).kind == TokenKind::LParen { start + 1 } else { start };
+        let mut parser = Parser::new(tl, pos, &mut self.vars, self as *const _);
+        let val = parser.parse_expr()?;
+        let end = if tl.get(parser.pos).kind == TokenKind::RParen { parser.pos + 1 } else { parser.pos };
+        Ok((val, end))
+    }
+
+    fn exec_array_let(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
+        let idx = var_index(tl.get(start))?;
+        if tl.get(start + 1).kind != TokenKind::LParen { return Err("SYNTAX ERROR"); }
+        let mut parser = Parser::new(tl, start + 2, &mut self.vars, self as *const _);
+        let i1 = parser.parse_expr()? as usize;
+        let mut pos = parser.pos;
+        let i2 = if tl.get(pos).kind == TokenKind::Comma {
+            let mut p2 = Parser::new(tl, pos + 1, &mut self.vars, self as *const _);
+            let v = p2.parse_expr()? as usize;
+            pos = p2.pos;
+            v
+        } else {
+            0
+        };
+        if tl.get(pos).kind != TokenKind::RParen { return Err("SYNTAX ERROR"); }
+        pos += 1;
+        if tl.get(pos).kind != TokenKind::Eq { return Err("SYNTAX ERROR"); }
+        let mut parser = Parser::new(tl, pos + 1, &mut self.vars, self as *const _);
+        let val = parser.parse_condition()?;
+        self.array_set(idx, i1, i2, val)
+    }
+
+    fn exec_string_let(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
+        let idx = var_index(tl.get(start))?;
+        if tl.get(start + 1).kind != TokenKind::Eq { return Err("SYNTAX ERROR"); }
+        let tok = tl.get(start + 2);
+        if tok.kind == TokenKind::StringLit {
+            self.string_set(idx, &tok.str_buf[..tok.str_len])
+        } else {
+            Err("SYNTAX ERROR")
+        }
+    }
+
+    fn exec_on(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
+        let mut parser = Parser::new(tl, start, &mut self.vars, self as *const _);
+        let val = parser.parse_expr()? as i32;
+        let mut pos = parser.pos;
+
+        let is_gosub = match tl.get(pos).kind {
+            TokenKind::Goto => false,
+            TokenKind::Gosub => true,
+            _ => return Err("SYNTAX ERROR"),
+        };
+        pos += 1;
+
+        let mut n = 0i32;
+        let mut target: Option<u16> = None;
+        while tl.get(pos).kind != TokenKind::Eol {
+            if tl.get(pos).kind == TokenKind::Comma { pos += 1; continue; }
+            let mut p = Parser::new(tl, pos, &mut self.vars, self as *const _);
+            let linenum = p.parse_expr()? as u16;
+            pos = p.pos;
+            n += 1;
+            if n == val { target = Some(linenum); }
+        }
+
+        if let Some(linenum) = target {
+            if is_gosub {
+                if self.gosub_sp >= self.gosub_stack.len() { return Err("GOSUB OVERFLOW"); }
+                self.gosub_stack[self.gosub_sp] = self.pc;
+                self.gosub_sp += 1;
+            }
+            self.jump_to_line(linenum)?;
+        }
+        Ok(())
+    }
+
+    fn exec_read(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
+        let mut pos = start;
+        while tl.get(pos).kind != TokenKind::Eol {
+            if tl.get(pos).kind == TokenKind::Comma { pos += 1; continue; }
+            if self.data_ptr >= self.data_count { return Err("OUT OF DATA"); }
+
+            if tl.get(pos).kind == TokenKind::StrIdent {
+                let idx = var_index(tl.get(pos))?;
+                let item = &self.data_store[self.data_ptr];
+                if !item.is_string { return Err("TYPE MISMATCH"); }
+                // Copy to local buf to avoid borrowing self.data_store and self.strings simultaneously
+                let len = item.str_len;
+                let mut buf = [0u8; 64];
+                buf[..len].copy_from_slice(&item.str_buf[..len]);
+                self.data_ptr += 1;
+                self.string_set(idx, &buf[..len])?;
+            } else if tl.get(pos).kind == TokenKind::Ident {
+                let idx = var_index(tl.get(pos))?;
+                let item = &self.data_store[self.data_ptr];
+                if item.is_string { return Err("TYPE MISMATCH"); }
+                self.vars[idx] = item.num_val;
+                self.data_ptr += 1;
+            } else {
+                return Err("SYNTAX ERROR");
+            }
+            pos += 1;
+        }
+        Ok(())
+    }
+
+    fn exec_poke(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
+        let mut parser = Parser::new(tl, start, &mut self.vars, self as *const _);
+        let addr = parser.parse_expr()? as usize;
+        let (val, _) = self.parse_comma_arg(tl, parser.pos)?;
+        unsafe { core::ptr::write_volatile(addr as *mut u8, val as u8); }
+        Ok(())
+    }
+
+    fn exec_delay(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
+        let mut parser = Parser::new(tl, start, &mut self.vars, self as *const _);
+        let ms = parser.parse_expr()? as u32;
+        // PIT runs at 200Hz = 5ms per tick
+        let ticks_needed = (ms + 4) / 5; // round up
+        let start_ticks = unsafe { core::ptr::read_volatile(&raw const crate::interrupts::TICKS) };
+        loop {
+            let now = unsafe { core::ptr::read_volatile(&raw const crate::interrupts::TICKS) };
+            if now.wrapping_sub(start_ticks) >= ticks_needed as u64 { break; }
+            unsafe { core::arch::asm!("hlt"); }
+        }
+        Ok(())
+    }
+
+    fn exec_dos(&mut self, con: &mut Console) {
+        loop {
+            con.set_color(crate::console::Color::Yellow, crate::console::Color::Black);
+            con.print("\n  RUSTARUS DOS\n");
+            con.set_color(crate::console::Color::LightCyan, crate::console::Color::Black);
+            con.print("  D - Directory\n");
+            con.print("  L - Load file\n");
+            con.print("  S - Save program\n");
+            con.print("  E - Erase file\n");
+            con.print("  F - Format disk\n");
+            con.print("  B - Back to BASIC\n\n");
+            con.set_color(crate::console::Color::White, crate::console::Color::Black);
+            con.print("  Choice? ");
+
+            let c = crate::interrupts::keybuf_read_blocking() as u8;
+            con.putchar(c);
+            con.putchar(b'\n');
+
+            match c.to_ascii_uppercase() {
+                b'B' => return,
+                b'D' => { crate::fs::fs_list(con); }
+                b'L' => {
+                    let (name, len) = dos_prompt_filename(con);
+                    if len > 0 {
+                        let buf = Self::disk_buf();
+                        match crate::fs::fs_load(&name[..len], buf, PROGRAM_BUF_SIZE) {
+                            Ok(size) => {
+                                self.vars = [0.0; 26];
+                                self.deserialize_program(buf, size);
+                                con.print("  LOADED\n");
+                            }
+                            Err(e) => { con.print("  "); con.print(e); con.putchar(b'\n'); }
+                        }
+                    }
+                }
+                b'S' => {
+                    let (name, len) = dos_prompt_filename(con);
+                    if len > 0 {
+                        let buf = Self::disk_buf();
+                        let size = self.serialize_program(buf);
+                        match crate::fs::fs_save(&name[..len], &buf[..size]) {
+                            Ok(()) => con.print("  SAVED\n"),
+                            Err(e) => { con.print("  "); con.print(e); con.putchar(b'\n'); }
+                        }
+                    }
+                }
+                b'E' => {
+                    let (name, len) = dos_prompt_filename(con);
+                    if len > 0 {
+                        match crate::fs::fs_delete(&name[..len]) {
+                            Ok(()) => con.print("  DELETED\n"),
+                            Err(e) => { con.print("  "); con.print(e); con.putchar(b'\n'); }
+                        }
+                    }
+                }
+                b'F' => {
+                    con.print("  ARE YOU SURE? (Y/N) ");
+                    let mut buf = [0u8; 4];
+                    let len = super::read_line(con, &mut buf);
+                    if len > 0 && (buf[0] == b'Y' || buf[0] == b'y') {
+                        match crate::fs::fs_format() {
+                            Ok(()) => con.print("  FORMATTED\n"),
+                            Err(e) => { con.print("  "); con.print(e); con.putchar(b'\n'); }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn dos_prompt_filename(con: &mut Console) -> ([u8; 32], usize) {
+    con.print("  Filename: ");
+    let mut name = [0u8; 32];
+    let len = super::read_line(con, &mut name);
+    (name, len)
 }
 
 fn print_token_str(con: &mut Console, tok: &super::token::Token) {

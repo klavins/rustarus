@@ -41,7 +41,7 @@ static mut KEYBUF_TAIL: usize = 0;
 static mut SHIFT_HELD: bool = false;
 static mut CTRL_HELD: bool = false;
 
-static mut TICKS: u64 = 0;
+pub static mut TICKS: u64 = 0;
 
 // Scancode tables — 58 entries each (scancodes 0x00..0x39)
 #[rustfmt::skip]

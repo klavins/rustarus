@@ -39,11 +39,12 @@ pub struct Parser<'a> {
     tl: &'a TokenLine,
     pub pos: usize,
     vars: *mut [f64; 26],
+    state: *const super::exec::BasicState,
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(tl: &'a TokenLine, pos: usize, vars: *mut [f64; 26]) -> Self {
-        Self { tl, pos, vars }
+    pub fn new(tl: &'a TokenLine, pos: usize, vars: *mut [f64; 26], state: *const super::exec::BasicState) -> Self {
+        Self { tl, pos, vars, state }
     }
 
     fn kind(&self) -> TokenKind {
@@ -196,9 +197,24 @@ impl<'a> Parser<'a> {
                     return Ok(val);
                 }
 
-                // Variable A-Z
                 let idx = var_index(tok)?;
                 self.advance();
+
+                // Array access: A(i) or A(i,j)
+                if self.kind() == TokenKind::LParen {
+                    self.advance();
+                    let i1 = self.parse_condition()? as usize;
+                    let i2 = if self.kind() == TokenKind::Comma {
+                        self.advance();
+                        self.parse_condition()? as usize
+                    } else {
+                        0
+                    };
+                    self.expect(TokenKind::RParen)?;
+                    let state = unsafe { &*self.state };
+                    return state.array_get(idx, i1, i2);
+                }
+
                 Ok(unsafe { (*self.vars)[idx] })
             }
             _ => Err("SYNTAX ERROR"),
@@ -207,11 +223,12 @@ impl<'a> Parser<'a> {
 }
 
 fn match_builtin(name: &[u8]) -> Option<fn(f64) -> Result<f64, &'static str>> {
-    if name.len() < 2 || name.len() > 3 {
+    if name.len() < 2 || name.len() > 4 {
         return None;
     }
-    let mut upper = [0u8; 3];
-    for i in 0..name.len() {
+    let mut upper = [0u8; 4];
+    let len = name.len().min(4);
+    for i in 0..len {
         upper[i] = name[i].to_ascii_uppercase();
     }
     match (name.len(), &upper[..name.len()]) {
@@ -224,6 +241,11 @@ fn match_builtin(name: &[u8]) -> Option<fn(f64) -> Result<f64, &'static str>> {
         (3, b"SQR") => Some(|n| {
             if n < 0.0 { Err("ILLEGAL QUANTITY") } else { Ok(sqrt_approx(n)) }
         }),
+        (4, b"PEEK") => Some(|addr| {
+            let byte = unsafe { core::ptr::read_volatile(addr as usize as *const u8) };
+            Ok(byte as f64)
+        }),
+        (3, b"LEN") => Some(|_| Ok(0.0)), // placeholder — string LEN needs string arg
         _ => None,
     }
 }

@@ -55,6 +55,16 @@ pub enum TokenKind {
     Show,
     Sound,
     Quit,
+    StrIdent,
+    Dim,
+    On,
+    Data,
+    Read,
+    Restore,
+    Poke,
+    Pause,
+    Delay,
+    Dos,
     Plus,
     Minus,
     Star,
@@ -168,6 +178,15 @@ static KEYWORDS: &[KeywordEntry] = &[
     KeywordEntry { name: b"SHOW", kind: TokenKind::Show },
     KeywordEntry { name: b"SOUND", kind: TokenKind::Sound },
     KeywordEntry { name: b"QUIT", kind: TokenKind::Quit },
+    KeywordEntry { name: b"DIM", kind: TokenKind::Dim },
+    KeywordEntry { name: b"ON", kind: TokenKind::On },
+    KeywordEntry { name: b"DATA", kind: TokenKind::Data },
+    KeywordEntry { name: b"READ", kind: TokenKind::Read },
+    KeywordEntry { name: b"RESTORE", kind: TokenKind::Restore },
+    KeywordEntry { name: b"POKE", kind: TokenKind::Poke },
+    KeywordEntry { name: b"PAUSE", kind: TokenKind::Pause },
+    KeywordEntry { name: b"DELAY", kind: TokenKind::Delay },
+    KeywordEntry { name: b"DOS", kind: TokenKind::Dos },
     KeywordEntry { name: b"AND", kind: TokenKind::And },
     KeywordEntry { name: b"OR", kind: TokenKind::Or },
     KeywordEntry { name: b"NOT", kind: TokenKind::Not },
@@ -263,7 +282,11 @@ pub fn tokenize(line: &[u8], len: usize, out: &mut TokenLine) -> Result<(), &'st
                 i += 1;
             }
 
-            if let Some(kw) = match_keyword(&tok.str_buf[..tok.str_len]) {
+            // Check for string variable: single letter + $
+            if tok.str_len == 1 && i < len && line[i] == b'$' {
+                i += 1; // consume $
+                tok.kind = TokenKind::StrIdent;
+            } else if let Some(kw) = match_keyword(&tok.str_buf[..tok.str_len]) {
                 tok.kind = kw;
                 if kw == TokenKind::Rem {
                     out.count += 1;
