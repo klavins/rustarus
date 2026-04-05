@@ -17,7 +17,7 @@
 
 use crate::console::Console;
 use super::parser::Parser;
-use super::token::{TokenKind, TokenLine, tokenize, var_index};
+use super::token::{TokenKind, TokenLine, tokenize, var_index, upper_name};
 use super::value::{print_f64, format_u64};
 
 const PROGRAM_BUF_SIZE: usize = 16384;
@@ -538,10 +538,8 @@ impl BasicState {
         let mut parser = Parser::new(tl, start + 2, &mut self.vars, self as *const _);
         let val = parser.parse_condition()?;
         if tok.str_len > 1 {
-            // Multi-letter variable
             let mut upper = [0u8; 16];
-            let len = tok.str_len.min(16);
-            for i in 0..len { upper[i] = tok.str_buf[i].to_ascii_uppercase(); }
+            let len = upper_name(tok, &mut upper);
             self.named_var_set(&upper[..len], val);
         } else {
             let idx = var_index(tok)?;
@@ -688,12 +686,18 @@ impl BasicState {
             con.print("? ");
         }
 
-        let idx = var_index(tl.get(pos))?;
-
+        let tok = tl.get(pos);
         let mut buf = [0u8; 80];
         let len = super::read_line(con, &mut buf);
         let (val, _) = super::value::parse_f64_bytes(&buf[..len]);
-        self.vars[idx] = val;
+        if tok.str_len > 1 {
+            let mut upper = [0u8; 16];
+            let nlen = upper_name(tok, &mut upper);
+            self.named_var_set(&upper[..nlen], val);
+        } else {
+            let idx = var_index(tok)?;
+            self.vars[idx] = val;
+        }
         Ok(())
     }
 
@@ -1046,11 +1050,19 @@ impl BasicState {
                 self.data_ptr += 1;
                 self.string_set(idx, &buf[..len])?;
             } else if tl.get(pos).kind == TokenKind::Ident {
-                let idx = var_index(tl.get(pos))?;
+                let tok = tl.get(pos);
                 let item = &self.data_store[self.data_ptr];
                 if item.is_string { return Err("TYPE MISMATCH"); }
-                self.vars[idx] = item.num_val;
+                let val = item.num_val;
                 self.data_ptr += 1;
+                if tok.str_len > 1 {
+                    let mut upper = [0u8; 16];
+                    let len = upper_name(tok, &mut upper);
+                    self.named_var_set(&upper[..len], val);
+                } else {
+                    let idx = var_index(tok)?;
+                    self.vars[idx] = val;
+                }
             } else {
                 return Err("SYNTAX ERROR");
             }

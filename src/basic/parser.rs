@@ -15,7 +15,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use super::token::{TokenKind, TokenLine, var_index};
+use super::token::{TokenKind, TokenLine, var_index, upper_name};
 
 static mut RNG_STATE: u32 = 0;
 
@@ -197,10 +197,7 @@ impl<'a> Parser<'a> {
                         let state = unsafe { &*self.state };
                         return Ok(state.string_get(idx).len() as f64);
                     }
-                    // Fallback: numeric LEN (not meaningful, but don't crash)
-                    let arg = self.parse_condition()?;
-                    self.expect(TokenKind::RParen)?;
-                    return Ok(arg);
+                    return Err("TYPE MISMATCH");
                 }
 
                 // Check for built-in functions (only if followed by parenthesis)
@@ -237,10 +234,8 @@ impl<'a> Parser<'a> {
                         return state.array_get(idx, i1, i2);
                     }
                     let state = unsafe { &*self.state };
-                    // Uppercase the name for case-insensitive lookup
                     let mut upper = [0u8; 16];
-                    let len = tok.str_len.min(16);
-                    for i in 0..len { upper[i] = tok.str_buf[i].to_ascii_uppercase(); }
+                    let len = upper_name(tok, &mut upper);
                     return Ok(state.named_var_get(&upper[..len]));
                 }
 
@@ -342,11 +337,11 @@ fn sqrt_approx(val: f64) -> f64 {
 
 /// Taylor series sin approximation (no libm in no_std)
 fn sin_approx(x: f64) -> f64 {
-    // Reduce to [-PI, PI]
     let pi = core::f64::consts::PI;
-    let mut a = x % (2.0 * pi);
-    if a > pi { a -= 2.0 * pi; }
-    if a < -pi { a += 2.0 * pi; }
+    let two_pi = 2.0 * pi;
+    let mut a = x % two_pi;
+    while a > pi { a -= two_pi; }
+    while a < -pi { a += two_pi; }
     // Taylor series: x - x^3/6 + x^5/120 - x^7/5040 + x^9/362880
     let x2 = a * a;
     let mut term = a;

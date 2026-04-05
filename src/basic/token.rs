@@ -122,6 +122,15 @@ pub fn var_index(tok: &Token) -> Result<usize, &'static str> {
 }
 
 
+/// Copy a token's name to a fixed buffer, uppercased. Returns length.
+pub fn upper_name(tok: &Token, buf: &mut [u8; 16]) -> usize {
+    let len = tok.str_len.min(16);
+    for i in 0..len {
+        buf[i] = tok.str_buf[i].to_ascii_uppercase();
+    }
+    len
+}
+
 pub struct TokenLine {
     pub tokens: [Token; MAX_TOKENS],
     pub count: usize,
