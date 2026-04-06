@@ -179,87 +179,96 @@ impl<'a> Parser<'a> {
                 self.expect(TokenKind::RParen)?;
                 Ok(val)
             }
-            TokenKind::Ident => {
-                let tok = self.tl.get(self.pos);
-
-                // LEN(A$) — string length function
-                if tok.str_len == 3 && tok.str_buf[0].to_ascii_uppercase() == b'L'
-                    && tok.str_buf[1].to_ascii_uppercase() == b'E'
-                    && tok.str_buf[2].to_ascii_uppercase() == b'N'
-                {
-                    self.advance();
-                    self.expect(TokenKind::LParen)?;
-                    if self.kind() == TokenKind::StrIdent {
-                        let stok = self.tl.get(self.pos);
-                        let idx = var_index(stok)?;
-                        self.advance();
-                        self.expect(TokenKind::RParen)?;
-                        let state = unsafe { &*self.state };
-                        return Ok(state.string_get(idx).len() as f64);
-                    }
-                    return Err("TYPE MISMATCH");
-                }
-
-                // Check for built-in functions (only if followed by parenthesis)
-                if self.tl.get(self.pos + 1).kind == TokenKind::LParen {
-                    if let Some(f) = match_builtin(&tok.str_buf[..tok.str_len]) {
-                        self.advance();
-                        self.expect(TokenKind::LParen)?;
-                        let arg = self.parse_condition()?;
-                        self.expect(TokenKind::RParen)?;
-                        return f(arg);
-                    }
-                }
-
-                // Built-in constants: SCRW, SCRH
-                if let Some(val) = match_builtin_const(&tok.str_buf[..tok.str_len]) {
-                    self.advance();
-                    return Ok(val);
-                }
-
-                // Multi-letter named variable (PASS, TEST, SCORE, etc.)
-                if tok.str_len > 1 {
-                    self.advance();
-                    // Check array access for multi-letter names
-                    if self.kind() == TokenKind::LParen {
-                        let idx = var_index(tok)?;
-                        self.advance();
-                        let i1 = self.parse_condition()? as usize;
-                        let i2 = if self.kind() == TokenKind::Comma {
-                            self.advance();
-                            self.parse_condition()? as usize
-                        } else { 0 };
-                        self.expect(TokenKind::RParen)?;
-                        let state = unsafe { &*self.state };
-                        return state.array_get(idx, i1, i2);
-                    }
-                    let state = unsafe { &*self.state };
-                    let mut upper = [0u8; 16];
-                    let len = upper_name(tok, &mut upper);
-                    return Ok(state.named_var_get(&upper[..len]));
-                }
-
-                // Single-letter variable A-Z
-                let idx = var_index(tok)?;
-                self.advance();
-
-                // Array access: A(i) or A(i,j)
-                if self.kind() == TokenKind::LParen {
-                    self.advance();
-                    let i1 = self.parse_condition()? as usize;
-                    let i2 = if self.kind() == TokenKind::Comma {
-                        self.advance();
-                        self.parse_condition()? as usize
-                    } else { 0 };
-                    self.expect(TokenKind::RParen)?;
-                    let state = unsafe { &*self.state };
-                    return state.array_get(idx, i1, i2);
-                }
-
-                Ok(unsafe { (*self.vars)[idx] })
-            }
+            TokenKind::Ident => self.parse_ident(),
             _ => Err("SYNTAX ERROR"),
         }
+    }
+
+    fn parse_ident(&mut self) -> Result<f64, &'static str> {
+        let tok = self.tl.get(self.pos);
+
+        // LEN(A$) — string length function
+        if tok.str_len == 3 && tok.str_buf[0].to_ascii_uppercase() == b'L'
+            && tok.str_buf[1].to_ascii_uppercase() == b'E'
+            && tok.str_buf[2].to_ascii_uppercase() == b'N'
+        {
+            self.advance();
+            self.expect(TokenKind::LParen)?;
+            if self.kind() == TokenKind::StrIdent {
+                let stok = self.tl.get(self.pos);
+                let idx = var_index(stok)?;
+                self.advance();
+                self.expect(TokenKind::RParen)?;
+                let state = unsafe { &*self.state };
+                return Ok(state.string_get(idx).len() as f64);
+            }
+            return Err("TYPE MISMATCH");
+        }
+
+        // Built-in functions: ABS, INT, SIN, COS, SQR, RND, PEEK, FRE
+        if self.tl.get(self.pos + 1).kind == TokenKind::LParen {
+            if let Some(f) = match_builtin(&tok.str_buf[..tok.str_len]) {
+                self.advance();
+                self.expect(TokenKind::LParen)?;
+                let arg = self.parse_condition()?;
+                self.expect(TokenKind::RParen)?;
+                return f(arg);
+            }
+        }
+
+        // Built-in constants: PI, RND, SCRW, SCRH
+        if let Some(val) = self.match_const(&tok.str_buf[..tok.str_len]) {
+            self.advance();
+            return Ok(val);
+        }
+
+        // Variable or array access
+        if tok.str_len > 1 {
+            self.parse_named_var(tok)
+        } else {
+            self.parse_single_var(tok)
+        }
+    }
+
+    /// Multi-letter named variable or array: SCORE, TEST(i), etc.
+    fn parse_named_var(&mut self, tok: &super::token::Token) -> Result<f64, &'static str> {
+        self.advance();
+        if self.kind() == TokenKind::LParen {
+            return self.parse_array_access(tok);
+        }
+        let state = unsafe { &*self.state };
+        let mut upper = [0u8; 16];
+        let len = upper_name(tok, &mut upper);
+        Ok(state.named_var_get(&upper[..len]))
+    }
+
+    /// Single-letter variable or array: A, A(i), A(i,j)
+    fn parse_single_var(&mut self, tok: &super::token::Token) -> Result<f64, &'static str> {
+        let idx = var_index(tok)?;
+        self.advance();
+        if self.kind() == TokenKind::LParen {
+            return self.parse_array_access(tok);
+        }
+        Ok(unsafe { (*self.vars)[idx] })
+    }
+
+    fn match_const(&self, name: &[u8]) -> Option<f64> {
+        let state = unsafe { &*self.state };
+        match_builtin_const(name, state.scrw, state.scrh)
+    }
+
+    /// Array subscript: (i) or (i,j)
+    fn parse_array_access(&mut self, tok: &super::token::Token) -> Result<f64, &'static str> {
+        let idx = var_index(tok)?;
+        self.advance(); // consume LParen
+        let i1 = self.parse_condition()? as usize;
+        let i2 = if self.kind() == TokenKind::Comma {
+            self.advance();
+            self.parse_condition()? as usize
+        } else { 0 };
+        self.expect(TokenKind::RParen)?;
+        let state = unsafe { &*self.state };
+        state.array_get(idx, i1, i2)
     }
 }
 
@@ -299,7 +308,7 @@ fn match_builtin(name: &[u8]) -> Option<fn(f64) -> Result<f64, &'static str>> {
     }
 }
 
-fn match_builtin_const(name: &[u8]) -> Option<f64> {
+fn match_builtin_const(name: &[u8], scrw: u32, scrh: u32) -> Option<f64> {
     if name.len() < 2 || name.len() > 4 {
         return None;
     }
@@ -309,24 +318,13 @@ fn match_builtin_const(name: &[u8]) -> Option<f64> {
         upper[i] = name[i].to_ascii_uppercase();
     }
     match (name.len(), &upper[..name.len()]) {
-        (2, b"PI") => return Some(core::f64::consts::PI),
+        (2, b"PI") => Some(core::f64::consts::PI),
         (3, b"RND") => {
             let r = rng_next();
-            return Some(r as f64 / 32768.0);
+            Some(r as f64 / 32768.0)
         }
-        _ => {}
-    }
-    // SCRW/SCRH need 4-letter match
-    if name.len() != 4 { return None; }
-    match &upper {
-        b"SCRW" => {
-            let gfx = unsafe { crate::drivers::graphics::GRAPHICS.get() };
-            Some(gfx.virt_width() as f64)
-        }
-        b"SCRH" => {
-            let gfx = unsafe { crate::drivers::graphics::GRAPHICS.get() };
-            Some(gfx.virt_height() as f64)
-        }
+        (4, b"SCRW") => Some(scrw as f64),
+        (4, b"SCRH") => Some(scrh as f64),
         _ => None,
     }
 }

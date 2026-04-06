@@ -23,6 +23,11 @@ static MODE_TARGET_WIDTH: [u32; 6] = [0, 0, 320, 640, 800, 0];
 
 pub static GRAPHICS: StaticCell<Graphics> = StaticCell::new(Graphics::new());
 
+fn noop_gpu_update(_: u32, _: u32, _: u32, _: u32) {}
+fn noop_can_flip() -> bool { false }
+fn noop_page_addr(_: u8) -> *mut u8 { core::ptr::null_mut() }
+fn noop_set_page(_: u8) {}
+
 pub struct Graphics {
     fb_addr: *mut u8,
     shadow: *mut u8,
@@ -43,6 +48,11 @@ pub struct Graphics {
     draw_page: u8,
     dirty_y0: u32,
     dirty_y1: u32,
+    // GPU callbacks (set after gpu_init, avoids circular dependency)
+    gpu_update_fn: fn(u32, u32, u32, u32),
+    gpu_can_flip: fn() -> bool,
+    gpu_page_addr: fn(u8) -> *mut u8,
+    gpu_set_page: fn(u8),
 }
 
 unsafe impl Send for Graphics {}
@@ -69,7 +79,24 @@ impl Graphics {
             draw_page: 0,
             dirty_y0: 0,
             dirty_y1: 0,
+            gpu_update_fn: noop_gpu_update,
+            gpu_can_flip: noop_can_flip,
+            gpu_page_addr: noop_page_addr,
+            gpu_set_page: noop_set_page,
         }
+    }
+
+    pub fn set_gpu_ops(
+        &mut self,
+        update: fn(u32, u32, u32, u32),
+        can_flip: fn() -> bool,
+        page_addr: fn(u8) -> *mut u8,
+        set_page: fn(u8),
+    ) {
+        self.gpu_update_fn = update;
+        self.gpu_can_flip = can_flip;
+        self.gpu_page_addr = page_addr;
+        self.gpu_set_page = set_page;
     }
 
     pub fn init(
@@ -320,18 +347,16 @@ impl Graphics {
             return;
         }
 
-        let gpu = unsafe { crate::drivers::gpu::GPU.get() };
-
-        if gpu.can_flip() {
+        if (self.gpu_can_flip)() {
             // Page flip path: copy shadow to back page, then flip
             let back = 1 - self.draw_page;
-            let dest = gpu.page_addr(back);
+            let dest = (self.gpu_page_addr)(back);
             if !dest.is_null() {
                 let bytes = (self.fb_pitch * self.fb_height) as usize;
                 unsafe {
                     ptr::copy_nonoverlapping(self.shadow, dest, bytes);
                 }
-                gpu.set_page(back);
+                (self.gpu_set_page)(back);
                 self.draw_page = back;
             }
         } else {
@@ -350,7 +375,7 @@ impl Graphics {
                     bytes,
                 );
             }
-            crate::drivers::gpu::gpu_update(0, y0, self.fb_width, y1 - y0);
+            (self.gpu_update_fn)(0, y0, self.fb_width, y1 - y0);
         }
         self.dirty_reset();
     }

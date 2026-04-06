@@ -28,9 +28,6 @@ pub mod cell;
 mod edit;
 mod heap;
 
-use console::vt100::Vt100;
-static VT100: StaticCell<Vt100> = StaticCell::new(Vt100::new());
-
 #[global_allocator]
 static ALLOCATOR: heap::HeapAllocator = heap::HeapAllocator;
 
@@ -164,7 +161,14 @@ fn main() -> Status {
     basic::value::print_f64(con, height as f64);
     con.print("\n");
 
-    drivers::gpu::gpu_init(con, fb_base, width as u32, height as u32, pitch as u32);
+    drivers::gpu::gpu_init(con, gfx, fb_base, width as u32, height as u32, pitch as u32);
+    con.set_gpu_update(drivers::gpu::gpu_update);
+    gfx.set_gpu_ops(
+        drivers::gpu::gpu_update,
+        drivers::gpu::gpu_can_flip,
+        drivers::gpu::gpu_page_addr,
+        drivers::gpu::gpu_set_page,
+    );
     os::ata::ata_init();
 
     unsafe { os::interrupts::init() };

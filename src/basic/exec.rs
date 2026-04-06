@@ -75,6 +75,9 @@ pub struct BasicState {
     data_store: Vec<DataItem>,
     data_ptr: usize,
     named_vars: Vec<NamedVar>,
+    pub(super) gfx: *mut crate::drivers::graphics::Graphics,
+    pub scrw: u32,
+    pub scrh: u32,
 }
 
 impl BasicState {
@@ -93,7 +96,16 @@ impl BasicState {
             data_store: Vec::new(),
             data_ptr: 0,
             named_vars: Vec::new(),
+            gfx: core::ptr::null_mut(),
+            scrw: 0,
+            scrh: 0,
         }
+    }
+
+    pub fn init_gfx(&mut self, gfx: &mut crate::drivers::graphics::Graphics) {
+        self.gfx = gfx as *mut _;
+        self.scrw = gfx.virt_width();
+        self.scrh = gfx.virt_height();
     }
 
     fn find_line_or_after(&self, number: u16) -> usize {
@@ -166,6 +178,22 @@ impl BasicState {
         self.data_store.clear();
         self.data_ptr = 0;
         self.named_vars.clear();
+    }
+
+    fn set_var(&mut self, tok: &super::token::Token, val: f64) -> Result<(), &'static str> {
+        if tok.str_len > 1 {
+            let mut upper = [0u8; 16];
+            let len = upper_name(tok, &mut upper);
+            self.named_var_set(&upper[..len], val);
+        } else {
+            let idx = var_index(tok)?;
+            self.vars[idx] = val;
+        }
+        Ok(())
+    }
+
+    fn parser<'a>(&'a mut self, tl: &'a TokenLine, pos: usize) -> Parser<'a> {
+        Parser::new(tl, pos, &mut self.vars, self as *const _)
     }
 
     pub fn named_var_get(&self, name: &[u8]) -> f64 {
@@ -355,7 +383,7 @@ impl BasicState {
             TokenKind::ColorCmd => self.exec_color(tl, start + 1),
             TokenKind::Pos => self.exec_pos(tl, start + 1),
             TokenKind::TextCmd => self.exec_text(tl, start + 1),
-            TokenKind::Show => { Self::gfx().present(); Ok(()) }
+            TokenKind::Show => { self.gfx().present(); Ok(()) }
             TokenKind::Sound => self.exec_sound(tl, start + 1),
             TokenKind::Quit => {
                 con.print(" SHUTTING DOWN...\n");
@@ -413,7 +441,7 @@ impl BasicState {
                     pos += 1;
                 }
                 _ => {
-                    let mut parser = Parser::new(tl,pos, &mut self.vars, self as *const _);
+                    let mut parser = self.parser(tl, pos);
                     let val = parser.parse_condition()?;
                     pos = parser.pos;
                     print_f64(con, val);
@@ -432,21 +460,13 @@ impl BasicState {
         if tl.get(start + 1).kind != TokenKind::Eq {
             return Err("SYNTAX ERROR");
         }
-        let mut parser = Parser::new(tl, start + 2, &mut self.vars, self as *const _);
+        let mut parser = self.parser(tl, start + 2);
         let val = parser.parse_condition()?;
-        if tok.str_len > 1 {
-            let mut upper = [0u8; 16];
-            let len = upper_name(tok, &mut upper);
-            self.named_var_set(&upper[..len], val);
-        } else {
-            let idx = var_index(tok)?;
-            self.vars[idx] = val;
-        }
-        Ok(())
+        self.set_var(tok, val)
     }
 
     fn exec_if(&mut self, tl: &TokenLine, start: usize, con: &mut Console) -> Result<(), &'static str> {
-        let mut parser = Parser::new(tl,start, &mut self.vars, self as *const _);
+        let mut parser = self.parser(tl, start);
         let cond = parser.parse_condition()?;
         let pos = parser.pos;
 
@@ -471,7 +491,7 @@ impl BasicState {
             return Err("SYNTAX ERROR");
         }
 
-        let mut parser = Parser::new(tl,start + 2, &mut self.vars, self as *const _);
+        let mut parser = self.parser(tl, start + 2);
         let start_val = parser.parse_expr()?;
         let mut pos = parser.pos;
 
@@ -480,12 +500,12 @@ impl BasicState {
         }
         pos += 1;
 
-        let mut parser = Parser::new(tl,pos, &mut self.vars, self as *const _);
+        let mut parser = self.parser(tl, pos);
         let limit = parser.parse_expr()?;
         pos = parser.pos;
 
         let step = if tl.get(pos).kind == TokenKind::Step {
-            let mut parser = Parser::new(tl,pos + 1, &mut self.vars, self as *const _);
+            let mut parser = self.parser(tl, pos + 1);
             parser.parse_expr()?
         } else {
             1.0
@@ -545,7 +565,7 @@ impl BasicState {
     }
 
     fn exec_goto(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
-        let mut parser = Parser::new(tl,start, &mut self.vars, self as *const _);
+        let mut parser = self.parser(tl, start);
         let linenum = parser.parse_expr()? as u16;
         self.jump_to_line(linenum)
     }
@@ -554,7 +574,7 @@ impl BasicState {
         if self.gosub_sp >= self.gosub_stack.len() {
             return Err("GOSUB OVERFLOW");
         }
-        let mut parser = Parser::new(tl,start, &mut self.vars, self as *const _);
+        let mut parser = self.parser(tl, start);
         let linenum = parser.parse_expr()? as u16;
         self.gosub_stack[self.gosub_sp] = self.pc;
         self.gosub_sp += 1;
@@ -587,15 +607,7 @@ impl BasicState {
         let mut buf = [0u8; 80];
         let len = super::read_line(con, &mut buf);
         let (val, _) = super::value::parse_f64_bytes(&buf[..len]);
-        if tok.str_len > 1 {
-            let mut upper = [0u8; 16];
-            let nlen = upper_name(tok, &mut upper);
-            self.named_var_set(&upper[..nlen], val);
-        } else {
-            let idx = var_index(tok)?;
-            self.vars[idx] = val;
-        }
-        Ok(())
+        self.set_var(tok, val)
     }
 
     // --- Disk commands ---
@@ -709,70 +721,72 @@ impl BasicState {
         Ok(())
     }
 
-    fn gfx() -> &'static mut crate::drivers::graphics::Graphics {
-        unsafe { crate::drivers::graphics::GRAPHICS.get() }
+    fn gfx(&mut self) -> &mut crate::drivers::graphics::Graphics {
+        unsafe { &mut *self.gfx }
     }
 
     fn parse_xy(&mut self, tl: &TokenLine, start: usize) -> Result<(i32, i32, usize), &'static str> {
-        let mut parser = Parser::new(tl,start, &mut self.vars, self as *const _);
+        let mut parser = self.parser(tl, start);
         let x = parser.parse_expr()? as i32;
         let pos = parser.pos;
         if tl.get(pos).kind != TokenKind::Comma {
             return Err("SYNTAX ERROR");
         }
-        let mut parser = Parser::new(tl,pos + 1, &mut self.vars, self as *const _);
+        let mut parser = self.parser(tl, pos + 1);
         let y = parser.parse_expr()? as i32;
         Ok((x, y, parser.pos))
     }
 
     fn exec_graphics(&mut self, tl: &TokenLine, start: usize, con: &mut Console) -> Result<(), &'static str> {
-        let mut parser = Parser::new(tl,start, &mut self.vars, self as *const _);
+        let mut parser = self.parser(tl, start);
         let mode = parser.parse_expr()? as u8;
-        Self::gfx().set_mode(mode, con);
+        self.gfx().set_mode(mode, con);
+        self.scrw = self.gfx().virt_width();
+        self.scrh = self.gfx().virt_height();
         Ok(())
     }
 
     fn exec_plot(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
         let (x, y, _) = self.parse_xy(tl, start)?;
-        Self::gfx().plot(x, y);
+        self.gfx().plot(x, y);
         Ok(())
     }
 
     fn exec_drawto(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
         let (x, y, _) = self.parse_xy(tl, start)?;
-        Self::gfx().drawto(x, y);
+        self.gfx().drawto(x, y);
         Ok(())
     }
 
     fn exec_fillto(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
         let (x, y, _) = self.parse_xy(tl, start)?;
-        Self::gfx().fillto(x, y);
+        self.gfx().fillto(x, y);
         Ok(())
     }
 
     fn exec_color(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
-        let mut parser = Parser::new(tl,start, &mut self.vars, self as *const _);
+        let mut parser = self.parser(tl, start);
         let idx = parser.parse_expr()? as u8;
-        Self::gfx().set_color(idx);
+        self.gfx().set_color(idx);
         Ok(())
     }
 
     fn exec_pos(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
         let (x, y, _) = self.parse_xy(tl, start)?;
-        Self::gfx().pos(x, y);
+        self.gfx().pos(x, y);
         Ok(())
     }
 
     fn exec_text(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
         let tok = tl.get(start);
         if tok.kind == TokenKind::StringLit {
-            Self::gfx().text(&tok.str_buf[..tok.str_len]);
+            self.gfx().text(&tok.str_buf[..tok.str_len]);
         } else {
-            let mut parser = Parser::new(tl,start, &mut self.vars, self as *const _);
+            let mut parser = self.parser(tl, start);
             let val = parser.parse_expr()?;
             let mut buf = [0u8; 32];
             let len = super::value::format_f64(val, &mut buf);
-            Self::gfx().text(&buf[..len]);
+            self.gfx().text(&buf[..len]);
         }
         Ok(())
     }
@@ -782,7 +796,7 @@ impl BasicState {
         if tl.get(pos).kind != TokenKind::Comma {
             return Err("SYNTAX ERROR");
         }
-        let mut parser = Parser::new(tl,pos + 1, &mut self.vars, self as *const _);
+        let mut parser = self.parser(tl, pos + 1);
         let val = parser.parse_expr()?;
         Ok((val, parser.pos))
     }
@@ -790,7 +804,7 @@ impl BasicState {
     fn exec_sound(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
         // SOUND voice, pitch, distortion, volume
         // Voice and distortion are parsed but ignored (PC speaker only)
-        let mut parser = Parser::new(tl,start, &mut self.vars, self as *const _);
+        let mut parser = self.parser(tl, start);
         let _voice = parser.parse_expr()?;
         let pos = parser.pos;
         let (pitch, pos) = self.parse_comma_arg(tl, pos)?;
@@ -817,17 +831,18 @@ impl BasicState {
         } else if tok.kind == TokenKind::Ident {
             let idx = var_index(tok)?;
             if tl.get(start + 1).kind != TokenKind::LParen { return Err("SYNTAX ERROR"); }
-            let mut parser = Parser::new(tl, start + 2, &mut self.vars, self as *const _);
+            let mut parser = self.parser(tl, start + 2);
             let dim1 = parser.parse_expr()? as u16;
-            let dim2 = if tl.get(parser.pos).kind == TokenKind::Comma {
-                let mut p2 = Parser::new(tl, parser.pos + 1, &mut self.vars, self as *const _);
+            let mut pos = parser.pos;
+            let dim2 = if tl.get(pos).kind == TokenKind::Comma {
+                let mut p2 = self.parser(tl, pos + 1);
                 let d = p2.parse_expr()? as u16;
-                parser.pos = p2.pos;
+                pos = p2.pos;
                 d
             } else {
                 0
             };
-            if tl.get(parser.pos).kind != TokenKind::RParen { return Err("SYNTAX ERROR"); }
+            if tl.get(pos).kind != TokenKind::RParen { return Err("SYNTAX ERROR"); }
             let total = if dim2 > 0 { dim1 as usize * dim2 as usize } else { dim1 as usize };
             if self.array_find(idx).is_some() { return Err("REDIM ERROR"); }
             self.arrays.push(Array {
@@ -842,7 +857,7 @@ impl BasicState {
     fn parse_comma_arg_or_first(&mut self, tl: &TokenLine, start: usize) -> Result<(f64, usize), &'static str> {
         // Handle optional ( before value
         let pos = if tl.get(start).kind == TokenKind::LParen { start + 1 } else { start };
-        let mut parser = Parser::new(tl, pos, &mut self.vars, self as *const _);
+        let mut parser = self.parser(tl, pos);
         let val = parser.parse_expr()?;
         let end = if tl.get(parser.pos).kind == TokenKind::RParen { parser.pos + 1 } else { parser.pos };
         Ok((val, end))
@@ -851,11 +866,11 @@ impl BasicState {
     fn exec_array_let(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
         let idx = var_index(tl.get(start))?;
         if tl.get(start + 1).kind != TokenKind::LParen { return Err("SYNTAX ERROR"); }
-        let mut parser = Parser::new(tl, start + 2, &mut self.vars, self as *const _);
+        let mut parser = self.parser(tl, start + 2);
         let i1 = parser.parse_expr()? as usize;
         let mut pos = parser.pos;
         let i2 = if tl.get(pos).kind == TokenKind::Comma {
-            let mut p2 = Parser::new(tl, pos + 1, &mut self.vars, self as *const _);
+            let mut p2 = self.parser(tl, pos + 1);
             let v = p2.parse_expr()? as usize;
             pos = p2.pos;
             v
@@ -865,7 +880,7 @@ impl BasicState {
         if tl.get(pos).kind != TokenKind::RParen { return Err("SYNTAX ERROR"); }
         pos += 1;
         if tl.get(pos).kind != TokenKind::Eq { return Err("SYNTAX ERROR"); }
-        let mut parser = Parser::new(tl, pos + 1, &mut self.vars, self as *const _);
+        let mut parser = self.parser(tl, pos + 1);
         let val = parser.parse_condition()?;
         self.array_set(idx, i1, i2, val)
     }
@@ -882,7 +897,7 @@ impl BasicState {
     }
 
     fn exec_on(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
-        let mut parser = Parser::new(tl, start, &mut self.vars, self as *const _);
+        let mut parser = self.parser(tl, start);
         let val = parser.parse_expr()? as i32;
         let mut pos = parser.pos;
 
@@ -897,7 +912,7 @@ impl BasicState {
         let mut target: Option<u16> = None;
         while tl.get(pos).kind != TokenKind::Eol {
             if tl.get(pos).kind == TokenKind::Comma { pos += 1; continue; }
-            let mut p = Parser::new(tl, pos, &mut self.vars, self as *const _);
+            let mut p = self.parser(tl, pos);
             let linenum = p.parse_expr()? as u16;
             pos = p.pos;
             n += 1;
@@ -937,14 +952,7 @@ impl BasicState {
                     DataItem::Str(_) => return Err("TYPE MISMATCH"),
                 };
                 self.data_ptr += 1;
-                if tok.str_len > 1 {
-                    let mut upper = [0u8; 16];
-                    let len = upper_name(tok, &mut upper);
-                    self.named_var_set(&upper[..len], val);
-                } else {
-                    let idx = var_index(tok)?;
-                    self.vars[idx] = val;
-                }
+                self.set_var(tok, val)?;
             } else {
                 return Err("SYNTAX ERROR");
             }
@@ -954,9 +962,10 @@ impl BasicState {
     }
 
     fn exec_poke(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
-        let mut parser = Parser::new(tl, start, &mut self.vars, self as *const _);
+        let mut parser = self.parser(tl, start);
         let addr = parser.parse_expr()? as usize;
-        let (val, _) = self.parse_comma_arg(tl, parser.pos)?;
+        let pos = parser.pos;
+        let (val, _) = self.parse_comma_arg(tl, pos)?;
         if let Some(ptr) = crate::os::interrupts::keystate_ptr(addr) {
             unsafe { core::ptr::write_volatile(ptr, val as u8); }
         } else {
@@ -966,7 +975,7 @@ impl BasicState {
     }
 
     fn exec_delay(&mut self, tl: &TokenLine, start: usize) -> Result<(), &'static str> {
-        let mut parser = Parser::new(tl, start, &mut self.vars, self as *const _);
+        let mut parser = self.parser(tl, start);
         let ms = parser.parse_expr()? as u32;
         // PIT runs at 200Hz = 5ms per tick
         let ticks_needed = (ms + 4) / 5; // round up

@@ -52,7 +52,7 @@ impl ActiveGpu {
     pub fn name(&self) -> &'static str { gpu_dispatch!(self, "none", |d| d.name()) }
 }
 
-pub static GPU: StaticCell<ActiveGpu> = StaticCell::new(ActiveGpu::None);
+static GPU: StaticCell<ActiveGpu> = StaticCell::new(ActiveGpu::None);
 
 fn print_hex16(con: &mut Console, val: u16) {
     let hex = b"0123456789ABCDEF";
@@ -121,6 +121,7 @@ fn try_activate(
     gpu: &mut ActiveGpu,
     active: ActiveGpu,
     con: &mut Console,
+    gfx: &mut super::graphics::Graphics,
 ) -> bool {
     let fb = gpu_dispatch!(&active, core::ptr::null_mut(), |d| d.framebuffer());
     if fb.is_null() {
@@ -132,14 +133,12 @@ fn try_activate(
     // Switch console and graphics to the GPU's framebuffer
     let old_fb = con.fb_addr();
     if fb != old_fb {
-        // Apply write-combining to the new framebuffer region
         let pitch = gpu_dispatch!(&active, 0, |d| d.pitch());
         let height = gpu_dispatch!(&active, 0, |d| d.height());
         if pitch > 0 && height > 0 {
             crate::os::pat::pat_set_write_combining(fb as u64, (pitch as u64) * (height as u64) * 2);
         }
         con.set_fb_addr(fb);
-        let gfx = unsafe { crate::drivers::graphics::GRAPHICS.get() };
         gfx.set_fb_addr(fb);
         con.clear();
     }
@@ -153,25 +152,31 @@ fn try_activate(
 }
 
 /// Probe GPU drivers and activate the first match.
-pub fn gpu_init(con: &mut Console, fb: *mut u8, width: u32, height: u32, pitch: u32) {
+pub fn gpu_init(
+    con: &mut Console,
+    gfx: &mut super::graphics::Graphics,
+    fb: *mut u8,
+    width: u32,
+    height: u32,
+    pitch: u32,
+) {
     pci_scan(con);
 
     let gpu = unsafe { GPU.get() };
 
-    // NVIDIA first (highest priority) — needs GOP fb info for WC path
     if let Some(mut drv) = NvidiaDriver::detect(con) {
         drv.init(fb, width, height, pitch, con);
-        if try_activate(gpu, ActiveGpu::Nvidia(drv), con) { return; }
+        if try_activate(gpu, ActiveGpu::Nvidia(drv), con, gfx) { return; }
     }
 
     if let Some(mut drv) = BgaDriver::detect() {
         drv.init(width, height);
-        if try_activate(gpu, ActiveGpu::Bga(drv), con) { return; }
+        if try_activate(gpu, ActiveGpu::Bga(drv), con, gfx) { return; }
     }
 
     if let Some(mut drv) = VmwareDriver::detect() {
         drv.init(width, height);
-        if try_activate(gpu, ActiveGpu::Vmware(drv), con) { return; }
+        if try_activate(gpu, ActiveGpu::Vmware(drv), con, gfx) { return; }
     }
 
     con.print(" Display: GOP\n");
@@ -182,4 +187,19 @@ pub fn gpu_init(con: &mut Console, fb: *mut u8, width: u32, height: u32, pitch: 
 pub fn gpu_update(x: u32, y: u32, w: u32, h: u32) {
     let gpu = unsafe { GPU.get() };
     gpu.update(x, y, w, h);
+}
+
+pub fn gpu_can_flip() -> bool {
+    let gpu = unsafe { GPU.get() };
+    gpu.can_flip()
+}
+
+pub fn gpu_page_addr(page: u8) -> *mut u8 {
+    let gpu = unsafe { GPU.get() };
+    gpu.page_addr(page)
+}
+
+pub fn gpu_set_page(page: u8) {
+    let gpu = unsafe { GPU.get() };
+    gpu.set_page(page);
 }

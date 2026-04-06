@@ -18,6 +18,18 @@
 use crate::console::font::FONT_8X16;
 use core::ptr;
 
+fn noop_gpu_update(_: u32, _: u32, _: u32, _: u32) {}
+
+const VT_MAX_PARAMS: usize = 4;
+
+#[derive(Copy, Clone, PartialEq)]
+enum VtState {
+    Normal,
+    Esc,
+    Csi,
+    Qmark,
+}
+
 const FONT_W: u32 = 8;
 const FONT_H: u32 = 16;
 
@@ -84,6 +96,17 @@ pub struct Console {
     dirty_max_y: u32,     // bottom of dirty region (pixel row, exclusive)
     fg_color: u32,
     bg_color: u32,
+    // GPU update callback (set after gpu_init, avoids circular dependency)
+    gpu_update_fn: fn(u32, u32, u32, u32),
+    // VT100 state (inlined to avoid separate global)
+    vt_state: VtState,
+    vt_params: [u16; VT_MAX_PARAMS],
+    vt_nparams: usize,
+    vt_fg: Color,
+    vt_bg: Color,
+    vt_default_fg: Color,
+    vt_default_bg: Color,
+    vt_reverse: bool,
 }
 
 impl Console {
@@ -105,6 +128,15 @@ impl Console {
             dirty_max_y: 0,
             fg_color: COLOR32_MAP[15],
             bg_color: COLOR32_MAP[0],
+            gpu_update_fn: noop_gpu_update,
+            vt_state: VtState::Normal,
+            vt_params: [0; VT_MAX_PARAMS],
+            vt_nparams: 0,
+            vt_fg: Color::LightGray,
+            vt_bg: Color::Black,
+            vt_default_fg: Color::LightGray,
+            vt_default_bg: Color::Black,
+            vt_reverse: false,
         }
     }
 
@@ -185,7 +217,7 @@ impl Console {
                 bytes,
             );
         }
-        crate::drivers::gpu::gpu_update(0, y0, self.fb_width, rows);
+        (self.gpu_update_fn)(0, y0, self.fb_width, rows);
     }
 
     fn flush_all(&mut self) {
@@ -201,7 +233,11 @@ impl Console {
         unsafe {
             ptr::copy_nonoverlapping(self.fb_shadow, self.fb_addr, bytes);
         }
-        crate::drivers::gpu::gpu_update(0, 0, self.fb_width, self.fb_height);
+        (self.gpu_update_fn)(0, 0, self.fb_width, self.fb_height);
+    }
+
+    pub fn set_gpu_update(&mut self, f: fn(u32, u32, u32, u32)) {
+        self.gpu_update_fn = f;
     }
 
     pub fn flush_hold(&mut self) {
@@ -287,9 +323,7 @@ impl Console {
         // Mirror to serial port for test capture
         if c == b'\n' { crate::console::serial::serial_putchar(b'\r'); }
         crate::console::serial::serial_putchar(c);
-        // Route through VT100 interpreter
-        let vt = unsafe { crate::VT100.get() };
-        vt.process(self, c);
+        self.vt_process(c);
     }
 
     fn putchar_inner(&mut self, c: u8) {
@@ -363,12 +397,6 @@ impl Console {
         self.bg_color = COLOR32_MAP[bg as usize];
     }
 
-    /// Putchar without serial mirror (for VT100 output that's already captured).
-    pub fn putchar_no_serial(&mut self, c: u8) {
-        self.draw_cursor(false);
-        self.putchar_inner(c);
-    }
-
     pub fn set_cursor(&mut self, row: u32, col: u32) {
         self.draw_cursor(false);
         let row = row.min(self.fb_rows.saturating_sub(1));
@@ -402,4 +430,171 @@ impl Console {
         self.flush_region(self.cursor_row * FONT_H, FONT_H);
     }
 
+    // --- VT100 escape sequence processing (inlined from vt100.rs) ---
+
+    /// Process a buffer of characters through the VT100 state machine.
+    /// Batches output with flush_hold/release for flicker-free rendering.
+    pub fn vt_write(&mut self, buf: &[u8]) {
+        self.flush_hold();
+        for &c in buf {
+            self.vt_process(c);
+        }
+        self.flush_release();
+    }
+
+    fn vt_process(&mut self, c: u8) {
+        match self.vt_state {
+            VtState::Normal => {
+                if c == 0x1B {
+                    self.vt_state = VtState::Esc;
+                } else {
+                    self.draw_cursor(false);
+                    self.putchar_inner(c);
+                }
+            }
+            VtState::Esc => {
+                if c == b'[' {
+                    self.vt_state = VtState::Csi;
+                    self.vt_nparams = 1;
+                    self.vt_params = [0; VT_MAX_PARAMS];
+                } else {
+                    self.vt_state = VtState::Normal;
+                }
+            }
+            VtState::Csi => {
+                if c == b'?' {
+                    self.vt_state = VtState::Qmark;
+                } else {
+                    self.vt_handle_csi(c);
+                }
+            }
+            VtState::Qmark => {
+                self.vt_handle_qmark(c);
+            }
+        }
+    }
+
+    fn vt_accumulate_digit(&mut self, digit: u8) {
+        if self.vt_nparams > 0 && self.vt_nparams <= VT_MAX_PARAMS {
+            let p = &mut self.vt_params[self.vt_nparams - 1];
+            *p = p.saturating_mul(10).saturating_add((digit - b'0') as u16);
+        }
+    }
+
+    fn vt_handle_csi(&mut self, c: u8) {
+        if c.is_ascii_digit() {
+            self.vt_accumulate_digit(c);
+            return;
+        }
+        if c == b';' {
+            if self.vt_nparams < VT_MAX_PARAMS {
+                self.vt_nparams += 1;
+            }
+            return;
+        }
+        match c {
+            b'H' | b'f' => {
+                let row = if self.vt_params[0] > 0 { self.vt_params[0] - 1 } else { 0 };
+                let col = if self.vt_nparams >= 2 && self.vt_params[1] > 0 { self.vt_params[1] - 1 } else { 0 };
+                self.set_cursor(row as u32, col as u32);
+            }
+            b'A' => {
+                let n = if self.vt_params[0] > 0 { self.vt_params[0] } else { 1 };
+                let (row, col) = self.get_cursor();
+                self.set_cursor(row.saturating_sub(n as u32), col);
+            }
+            b'B' => {
+                let n = if self.vt_params[0] > 0 { self.vt_params[0] } else { 1 };
+                let (row, col) = self.get_cursor();
+                self.set_cursor(row + n as u32, col);
+            }
+            b'C' => {
+                let n = if self.vt_params[0] > 0 { self.vt_params[0] } else { 1 };
+                let (row, col) = self.get_cursor();
+                self.set_cursor(row, col + n as u32);
+            }
+            b'D' => {
+                let n = if self.vt_params[0] > 0 { self.vt_params[0] } else { 1 };
+                let (row, col) = self.get_cursor();
+                self.set_cursor(row, col.saturating_sub(n as u32));
+            }
+            b'J' => {
+                if self.vt_params[0] == 2 { self.clear(); }
+            }
+            b'K' => {
+                self.clear_to_eol();
+            }
+            b'm' => {
+                self.vt_handle_sgr();
+            }
+            _ => {}
+        }
+        self.vt_state = VtState::Normal;
+    }
+
+    fn vt_handle_qmark(&mut self, c: u8) {
+        if c.is_ascii_digit() {
+            self.vt_accumulate_digit(c);
+            return;
+        }
+        if c == b';' {
+            if self.vt_nparams < VT_MAX_PARAMS { self.vt_nparams += 1; }
+            return;
+        }
+        match c {
+            b'h' => { if self.vt_params[0] == 25 { self.show_cursor(true); } }
+            b'l' => { if self.vt_params[0] == 25 { self.show_cursor(false); } }
+            _ => {}
+        }
+        self.vt_state = VtState::Normal;
+    }
+
+    fn vt_handle_sgr(&mut self) {
+        for i in 0..self.vt_nparams {
+            let p = self.vt_params[i];
+            match p {
+                0 => {
+                    self.vt_fg = self.vt_default_fg;
+                    self.vt_bg = self.vt_default_bg;
+                    self.vt_reverse = false;
+                }
+                7 => { self.vt_reverse = true; }
+                27 => { self.vt_reverse = false; }
+                39 => self.vt_fg = self.vt_default_fg,
+                49 => self.vt_bg = self.vt_default_bg,
+                30..=37 => self.vt_fg = ansi_to_color((p - 30) as u8),
+                40..=47 => self.vt_bg = ansi_to_color((p - 40) as u8),
+                90..=97 => self.vt_fg = ansi_to_color((p - 90 + 8) as u8),
+                100..=107 => self.vt_bg = ansi_to_color((p - 100 + 8) as u8),
+                _ => {}
+            }
+        }
+        if self.vt_reverse {
+            self.set_color(self.vt_bg, self.vt_fg);
+        } else {
+            self.set_color(self.vt_fg, self.vt_bg);
+        }
+    }
+}
+
+fn ansi_to_color(idx: u8) -> Color {
+    match idx {
+        0 => Color::Black,
+        1 => Color::Red,
+        2 => Color::Green,
+        3 => Color::Brown,
+        4 => Color::Blue,
+        5 => Color::Magenta,
+        6 => Color::Cyan,
+        7 => Color::LightGray,
+        8 => Color::DarkGray,
+        9 => Color::LightRed,
+        10 => Color::LightGreen,
+        11 => Color::Yellow,
+        12 => Color::LightBlue,
+        13 => Color::LightMagenta,
+        14 => Color::LightCyan,
+        15 => Color::White,
+        _ => Color::LightGray,
+    }
 }

@@ -62,6 +62,10 @@ pub fn basic_repl(con: &mut Console) -> ! {
     }
     let state = unsafe { &mut *STATE_PTR };
 
+    if state.gfx.is_null() {
+        state.init_gfx(unsafe { crate::drivers::graphics::GRAPHICS.get() });
+    }
+
     parser::rng_seed();
 
     // Check for AUTORUN.BAS on disk

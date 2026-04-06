@@ -20,19 +20,17 @@ use alloc::vec::Vec;
 use kilo_rs::{Editor, EditorIo, Key};
 use crate::console::Console;
 use crate::os::interrupts;
-use crate::console::vt100::Vt100;
 
 const MAX_FILE_SIZE: usize = 32768;
 
 /// EditorIo implementation for rustarus.
 pub struct RustarusIo<'a> {
     con: &'a mut Console,
-    vt: &'a mut Vt100,
 }
 
 impl<'a> RustarusIo<'a> {
-    pub fn new(con: &'a mut Console, vt: &'a mut Vt100) -> Self {
-        Self { con, vt }
+    pub fn new(con: &'a mut Console) -> Self {
+        Self { con }
     }
 }
 
@@ -63,8 +61,7 @@ impl<'a> EditorIo for RustarusIo<'a> {
     }
 
     fn write_str(&mut self, s: &str) {
-        // Route through VT100 for escape sequence interpretation
-        self.vt.write(self.con, s.as_bytes());
+        self.con.vt_write(s.as_bytes());
     }
 
     fn load_file(&mut self, name: &str) -> Option<Vec<u8>> {
@@ -84,10 +81,9 @@ impl<'a> EditorIo for RustarusIo<'a> {
 pub fn run_editor(con: &mut Console, filename: Option<&str>) {
     interrupts::keybuf_flush();
 
-    let vt = unsafe { crate::VT100.get() };
     let (rows, cols) = con.get_size();
 
-    let mut io = RustarusIo::new(con, vt);
+    let mut io = RustarusIo::new(con);
     let mut editor = Editor::new(rows as usize, cols as usize);
 
     if let Some(name) = filename {
