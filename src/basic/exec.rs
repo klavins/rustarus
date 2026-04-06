@@ -373,6 +373,7 @@ impl BasicState {
             }
             TokenKind::Delay => self.exec_delay(tl, start + 1),
             TokenKind::Dos => { self.exec_dos(con); Ok(()) }
+            TokenKind::Edit => self.exec_edit(tl, start + 1, con),
             // Bare assignment: A = 5
             TokenKind::Ident if tl.get(start + 1).kind == TokenKind::Eq => {
                 self.exec_let(tl, start)
@@ -974,6 +975,17 @@ impl BasicState {
             let now = unsafe { core::ptr::read_volatile(&raw const crate::interrupts::TICKS) };
             if now.wrapping_sub(start_ticks) >= ticks_needed as u64 { break; }
             unsafe { core::arch::asm!("hlt"); }
+        }
+        Ok(())
+    }
+
+    fn exec_edit(&mut self, tl: &TokenLine, start: usize, con: &mut Console) -> Result<(), &'static str> {
+        let tok = tl.get(start);
+        if tok.kind == TokenKind::StringLit || tok.kind == TokenKind::Ident {
+            let name = core::str::from_utf8(&tok.str_buf[..tok.str_len]).unwrap_or("");
+            crate::edit::run_editor(con, Some(name));
+        } else {
+            crate::edit::run_editor(con, None);
         }
         Ok(())
     }

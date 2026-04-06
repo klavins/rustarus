@@ -26,6 +26,7 @@ mod basic;
 pub mod bga;
 pub mod cell;
 mod console;
+mod edit;
 mod font;
 mod fs;
 pub mod gpu;
