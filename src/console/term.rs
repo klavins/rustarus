@@ -15,7 +15,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::font::FONT_8X16;
+use crate::console::font::FONT_8X16;
 use core::ptr;
 
 const FONT_W: u32 = 8;
@@ -185,7 +185,7 @@ impl Console {
                 bytes,
             );
         }
-        crate::gpu::gpu_update(0, y0, self.fb_width, rows);
+        crate::drivers::gpu::gpu_update(0, y0, self.fb_width, rows);
     }
 
     fn flush_all(&mut self) {
@@ -201,7 +201,7 @@ impl Console {
         unsafe {
             ptr::copy_nonoverlapping(self.fb_shadow, self.fb_addr, bytes);
         }
-        crate::gpu::gpu_update(0, 0, self.fb_width, self.fb_height);
+        crate::drivers::gpu::gpu_update(0, 0, self.fb_width, self.fb_height);
     }
 
     pub fn flush_hold(&mut self) {
@@ -285,8 +285,8 @@ impl Console {
 
     pub fn putchar(&mut self, c: u8) {
         // Mirror to serial port for test capture
-        if c == b'\n' { crate::serial::serial_putchar(b'\r'); }
-        crate::serial::serial_putchar(c);
+        if c == b'\n' { crate::console::serial::serial_putchar(b'\r'); }
+        crate::console::serial::serial_putchar(c);
         // Route through VT100 interpreter
         let vt = unsafe { crate::VT100.get() };
         vt.process(self, c);

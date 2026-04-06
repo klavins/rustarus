@@ -15,8 +15,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::ata::SECTOR_SIZE;
-use crate::pci::{pci_find_device, pci_read_bar, pci_enable_device};
+use crate::os::ata::SECTOR_SIZE;
+use crate::os::pci::{pci_find_device, pci_read_bar, pci_enable_device};
 use core::ptr;
 const AHCI_MAX_PORTS: usize = 32;
 

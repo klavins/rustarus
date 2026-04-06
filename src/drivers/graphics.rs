@@ -16,7 +16,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::cell::StaticCell;
-use crate::font::FONT_8X16;
+use crate::console::font::FONT_8X16;
 use core::ptr;
 
 static MODE_TARGET_WIDTH: [u32; 6] = [0, 0, 320, 640, 800, 0];
@@ -320,7 +320,7 @@ impl Graphics {
             return;
         }
 
-        let gpu = unsafe { crate::gpu::GPU.get() };
+        let gpu = unsafe { crate::drivers::gpu::GPU.get() };
 
         if gpu.can_flip() {
             // Page flip path: copy shadow to back page, then flip
@@ -350,7 +350,7 @@ impl Graphics {
                     bytes,
                 );
             }
-            crate::gpu::gpu_update(0, y0, self.fb_width, y1 - y0);
+            crate::drivers::gpu::gpu_update(0, y0, self.fb_width, y1 - y0);
         }
         self.dirty_reset();
     }

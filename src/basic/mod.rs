@@ -28,7 +28,7 @@ use token::{TokenLine, tokenize};
 pub fn read_line(con: &mut Console, buf: &mut [u8]) -> usize {
     let mut pos = 0;
     loop {
-        let c = crate::interrupts::keybuf_read_blocking() as u8;
+        let c = crate::os::interrupts::keybuf_read_blocking() as u8;
         if c == b'\n' {
             con.putchar(b'\n');
             return pos;
@@ -67,7 +67,7 @@ pub fn basic_repl(con: &mut Console) -> ! {
     // Check for AUTORUN.BAS on disk
     {
         let buf = exec::BasicState::disk_buf();
-        if let Ok(size) = crate::fs::fs_load(b"AUTORUN.BAS", buf, 16384) {
+        if let Ok(size) = crate::os::fs::fs_load(b"AUTORUN.BAS", buf, 16384) {
             state.vars = [0.0; 26];
             state.deserialize_program(buf, size);
             con.print(" AUTORUN.BAS\n");

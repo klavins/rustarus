@@ -15,7 +15,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::ata::{ata_read_sector, ata_write_sector, ata_get_total_sectors, SECTOR_SIZE};
+use crate::os::ata::{ata_read_sector, ata_write_sector, ata_get_total_sectors, SECTOR_SIZE};
 use crate::console::Console;
 use crate::basic::value::print_f64;
 

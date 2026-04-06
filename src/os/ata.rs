@@ -15,7 +15,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::io::{outb, inb, outw, inw};
+use crate::os::io::{outb, inb, outw, inw};
 
 pub const SECTOR_SIZE: usize = 512;
 
@@ -23,14 +23,14 @@ static mut USE_AHCI: bool = false;
 
 /// Initialize disk — try AHCI first, fall back to PIO.
 pub fn ata_init() {
-    if crate::ahci::ahci_init() >= 0 {
+    if crate::os::ahci::ahci_init() >= 0 {
         unsafe { USE_AHCI = true; }
     }
 }
 
 pub fn ata_read_sector(lba: u32, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), &'static str> {
     if unsafe { USE_AHCI } {
-        crate::ahci::ahci_read_sector(lba, buf)
+        crate::os::ahci::ahci_read_sector(lba, buf)
     } else {
         pio_read_sector(lba, buf)
     }
@@ -38,7 +38,7 @@ pub fn ata_read_sector(lba: u32, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), &'st
 
 pub fn ata_write_sector(lba: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), &'static str> {
     if unsafe { USE_AHCI } {
-        crate::ahci::ahci_write_sector(lba, buf)
+        crate::os::ahci::ahci_write_sector(lba, buf)
     } else {
         pio_write_sector(lba, buf)
     }
@@ -46,7 +46,7 @@ pub fn ata_write_sector(lba: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), &'stati
 
 pub fn ata_get_total_sectors() -> u32 {
     if unsafe { USE_AHCI } {
-        crate::ahci::ahci_get_total_sectors()
+        crate::os::ahci::ahci_get_total_sectors()
     } else {
         pio_get_total_sectors()
     }

@@ -16,7 +16,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use core::arch::{asm, naked_asm};
-use crate::io::{outb, inb};
+use crate::os::io::{outb, inb};
 
 // PIC ports
 const PIC1_CMD: u16 = 0x20;

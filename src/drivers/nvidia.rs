@@ -16,7 +16,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::console::Console;
-use crate::pci::{pci_find_vendor, pci_read_bar, pci_enable_device};
+use crate::os::pci::{pci_find_vendor, pci_read_bar, pci_enable_device};
 use core::arch::asm;
 use core::ptr;
 

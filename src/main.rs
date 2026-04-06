@@ -20,29 +20,15 @@
 
 extern crate alloc;
 
-pub mod ahci;
-mod ata;
+pub mod os;
+pub mod drivers;
+pub mod console;
 mod basic;
-pub mod bga;
 pub mod cell;
-mod console;
 mod edit;
-mod font;
-mod fs;
-pub mod gpu;
-pub mod graphics;
 mod heap;
-mod interrupts;
-pub mod nvidia;
-mod io;
-pub mod pat;
-pub mod pci;
-pub mod serial;
-pub mod speaker;
-pub mod vmware;
-pub mod vt100;
 
-use vt100::Vt100;
+use console::vt100::Vt100;
 static VT100: StaticCell<Vt100> = StaticCell::new(Vt100::new());
 
 #[global_allocator]
@@ -68,9 +54,9 @@ pub fn halt() -> ! {
 /// Falls back to halt if running on real hardware.
 pub fn shutdown() -> ! {
     unsafe {
-        crate::io::outw(0x604, 0x2000);  // QEMU
-        crate::io::outw(0xB004, 0x2000); // Bochs
-        crate::io::outw(0x4004, 0x3400); // VirtualBox
+        crate::os::io::outw(0x604, 0x2000);  // QEMU
+        crate::os::io::outw(0xB004, 0x2000); // Bochs
+        crate::os::io::outw(0x4004, 0x3400); // VirtualBox
     }
     halt()
 }
@@ -152,21 +138,21 @@ fn main() -> Status {
     let shadow = best_base as *mut u8;
     let saved_fb = unsafe { shadow.add(fb_size) };
 
-    serial::serial_init();
+    console::serial::serial_init();
 
     // Initialize heap allocator with memory after shadow + save buffers
     let heap_start = unsafe { shadow.add(fb_size * 2) };
     let heap_size = best_size as usize - fb_size * 2;
     unsafe { heap::heap_init(heap_start, heap_size) };
 
-    pat::pat_init();
-    pat::pat_set_write_combining(fb_base as u64, fb_size as u64);
+    os::pat::pat_init();
+    os::pat::pat_set_write_combining(fb_base as u64, fb_size as u64);
 
     let con = unsafe { CONSOLE.get() };
     con.init(fb_base, shadow, width as u32, height as u32, pitch as u32);
 
     // Initialize graphics module with same framebuffer
-    let gfx = unsafe { graphics::GRAPHICS.get() };
+    let gfx = unsafe { drivers::graphics::GRAPHICS.get() };
     gfx.init(fb_base, shadow, saved_fb, width as u32, height as u32, pitch as u32);
 
     con.set_color(Color::Green, Color::Black);
@@ -178,10 +164,10 @@ fn main() -> Status {
     basic::value::print_f64(con, height as f64);
     con.print("\n");
 
-    gpu::gpu_init(con, fb_base, width as u32, height as u32, pitch as u32);
-    ata::ata_init();
+    drivers::gpu::gpu_init(con, fb_base, width as u32, height as u32, pitch as u32);
+    os::ata::ata_init();
 
-    unsafe { interrupts::init() };
+    unsafe { os::interrupts::init() };
 
     con.set_color(Color::LightGray, Color::Black);
     con.print(" RUSTARUS OS v1\n");

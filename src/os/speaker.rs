@@ -15,7 +15,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::io::{outb, inb};
+use crate::os::io::{outb, inb};
 
 const PIT_FREQ: u32 = 1_193_182;
 const PIT_CMD: u16 = 0x43;

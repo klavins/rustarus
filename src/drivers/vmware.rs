@@ -15,8 +15,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::io::{outl, inl};
-use crate::pci::{pci_find_vendor, pci_read_bar, pci_enable_device};
+use crate::os::io::{outl, inl};
+use crate::os::pci::{pci_find_vendor, pci_read_bar, pci_enable_device};
 use core::ptr;
 
 const VMWARE_PCI_VENDOR: u16 = 0x15AD;

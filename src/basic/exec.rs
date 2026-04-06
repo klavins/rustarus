@@ -272,7 +272,7 @@ impl BasicState {
         self.pc = 0;
 
         while self.running && self.pc < self.lines.len() {
-            if crate::interrupts::keybuf_try_read() == Some(27) {
+            if crate::os::interrupts::keybuf_try_read() == Some(27) {
                 con.print("\nBREAK IN ");
                 print_f64(con, self.lines[self.pc].number as f64);
                 con.putchar(b'\n');
@@ -345,7 +345,7 @@ impl BasicState {
             TokenKind::Clr => { self.clear(); Ok(()) }
             TokenKind::Save => self.exec_save(tl, start + 1, con),
             TokenKind::Load => self.exec_load(tl, start + 1, con),
-            TokenKind::Dir => { crate::fs::fs_list(con); Ok(()) }
+            TokenKind::Dir => { crate::os::fs::fs_list(con); Ok(()) }
             TokenKind::Delete => self.exec_delete(tl, start + 1, con),
             TokenKind::Format => self.exec_format(con),
             TokenKind::GrCmd => self.exec_graphics(tl, start + 1, con),
@@ -368,7 +368,7 @@ impl BasicState {
             TokenKind::Restore => { self.data_ptr = 0; Ok(()) }
             TokenKind::Poke => self.exec_poke(tl, start + 1),
             TokenKind::Pause => {
-                crate::interrupts::keybuf_read_blocking();
+                crate::os::interrupts::keybuf_read_blocking();
                 Ok(())
             }
             TokenKind::Delay => self.exec_delay(tl, start + 1),
@@ -676,7 +676,7 @@ impl BasicState {
         let (name, name_len) = self.get_filename(tl, start)?;
         let buf = Self::disk_buf();
         let size = self.serialize_program(buf);
-        crate::fs::fs_save(&name[..name_len], &buf[..size])?;
+        crate::os::fs::fs_save(&name[..name_len], &buf[..size])?;
         con.print(" SAVED\n");
         Ok(())
     }
@@ -684,7 +684,7 @@ impl BasicState {
     fn exec_load(&mut self, tl: &TokenLine, start: usize, con: &mut Console) -> Result<(), &'static str> {
         let (name, name_len) = self.get_filename(tl, start)?;
         let buf = Self::disk_buf();
-        let size = crate::fs::fs_load(&name[..name_len], buf, PROGRAM_BUF_SIZE)?;
+        let size = crate::os::fs::fs_load(&name[..name_len], buf, PROGRAM_BUF_SIZE)?;
         self.vars = [0.0; 26];
         self.deserialize_program(buf, size);
         con.print(" LOADED\n");
@@ -693,7 +693,7 @@ impl BasicState {
 
     fn exec_delete(&mut self, tl: &TokenLine, start: usize, con: &mut Console) -> Result<(), &'static str> {
         let (name, name_len) = self.get_filename(tl, start)?;
-        crate::fs::fs_delete(&name[..name_len])?;
+        crate::os::fs::fs_delete(&name[..name_len])?;
         con.print(" DELETED\n");
         Ok(())
     }
@@ -703,14 +703,14 @@ impl BasicState {
         let mut buf = [0u8; 4];
         let len = super::read_line(con, &mut buf);
         if len > 0 && (buf[0] == b'Y' || buf[0] == b'y') {
-            crate::fs::fs_format()?;
+            crate::os::fs::fs_format()?;
             con.print(" FORMATTED\n");
         }
         Ok(())
     }
 
-    fn gfx() -> &'static mut crate::graphics::Graphics {
-        unsafe { crate::graphics::GRAPHICS.get() }
+    fn gfx() -> &'static mut crate::drivers::graphics::Graphics {
+        unsafe { crate::drivers::graphics::GRAPHICS.get() }
     }
 
     fn parse_xy(&mut self, tl: &TokenLine, start: usize) -> Result<(i32, i32, usize), &'static str> {
@@ -798,10 +798,10 @@ impl BasicState {
         let (volume, _) = self.parse_comma_arg(tl, pos)?;
 
         if volume as i32 == 0 {
-            crate::speaker::speaker_off();
+            crate::os::speaker::speaker_off();
         } else {
-            let freq = crate::speaker::atari_pitch_to_hz(pitch as u8);
-            crate::speaker::speaker_on(freq);
+            let freq = crate::os::speaker::atari_pitch_to_hz(pitch as u8);
+            crate::os::speaker::speaker_on(freq);
         }
         Ok(())
     }
@@ -957,7 +957,7 @@ impl BasicState {
         let mut parser = Parser::new(tl, start, &mut self.vars, self as *const _);
         let addr = parser.parse_expr()? as usize;
         let (val, _) = self.parse_comma_arg(tl, parser.pos)?;
-        if let Some(ptr) = crate::interrupts::keystate_ptr(addr) {
+        if let Some(ptr) = crate::os::interrupts::keystate_ptr(addr) {
             unsafe { core::ptr::write_volatile(ptr, val as u8); }
         } else {
             unsafe { core::ptr::write_volatile(addr as *mut u8, val as u8); }
@@ -970,9 +970,9 @@ impl BasicState {
         let ms = parser.parse_expr()? as u32;
         // PIT runs at 200Hz = 5ms per tick
         let ticks_needed = (ms + 4) / 5; // round up
-        let start_ticks = unsafe { core::ptr::read_volatile(&raw const crate::interrupts::TICKS) };
+        let start_ticks = unsafe { core::ptr::read_volatile(&raw const crate::os::interrupts::TICKS) };
         loop {
-            let now = unsafe { core::ptr::read_volatile(&raw const crate::interrupts::TICKS) };
+            let now = unsafe { core::ptr::read_volatile(&raw const crate::os::interrupts::TICKS) };
             if now.wrapping_sub(start_ticks) >= ticks_needed as u64 { break; }
             unsafe { core::arch::asm!("hlt"); }
         }
@@ -1004,18 +1004,18 @@ impl BasicState {
             con.set_color(crate::console::Color::White, crate::console::Color::Black);
             con.print("  Choice? ");
 
-            let c = crate::interrupts::keybuf_read_blocking() as u8;
+            let c = crate::os::interrupts::keybuf_read_blocking() as u8;
             con.putchar(c);
             con.putchar(b'\n');
 
             match c.to_ascii_uppercase() {
                 b'B' => return,
-                b'D' => { crate::fs::fs_list(con); }
+                b'D' => { crate::os::fs::fs_list(con); }
                 b'L' => {
                     let (name, len) = dos_prompt_filename(con);
                     if len > 0 {
                         let buf = Self::disk_buf();
-                        match crate::fs::fs_load(&name[..len], buf, PROGRAM_BUF_SIZE) {
+                        match crate::os::fs::fs_load(&name[..len], buf, PROGRAM_BUF_SIZE) {
                             Ok(size) => {
                                 self.vars = [0.0; 26];
                                 self.deserialize_program(buf, size);
@@ -1030,7 +1030,7 @@ impl BasicState {
                     if len > 0 {
                         let buf = Self::disk_buf();
                         let size = self.serialize_program(buf);
-                        match crate::fs::fs_save(&name[..len], &buf[..size]) {
+                        match crate::os::fs::fs_save(&name[..len], &buf[..size]) {
                             Ok(()) => con.print("  SAVED\n"),
                             Err(e) => { con.print("  "); con.print(e); con.putchar(b'\n'); }
                         }
@@ -1039,7 +1039,7 @@ impl BasicState {
                 b'E' => {
                     let (name, len) = dos_prompt_filename(con);
                     if len > 0 {
-                        match crate::fs::fs_delete(&name[..len]) {
+                        match crate::os::fs::fs_delete(&name[..len]) {
                             Ok(()) => con.print("  DELETED\n"),
                             Err(e) => { con.print("  "); con.print(e); con.putchar(b'\n'); }
                         }
@@ -1050,7 +1050,7 @@ impl BasicState {
                     let mut buf = [0u8; 4];
                     let len = super::read_line(con, &mut buf);
                     if len > 0 && (buf[0] == b'Y' || buf[0] == b'y') {
-                        match crate::fs::fs_format() {
+                        match crate::os::fs::fs_format() {
                             Ok(()) => con.print("  FORMATTED\n"),
                             Err(e) => { con.print("  "); con.print(e); con.putchar(b'\n'); }
                         }

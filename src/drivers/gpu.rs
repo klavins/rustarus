@@ -15,12 +15,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::bga::BgaDriver;
+use crate::drivers::bga::BgaDriver;
 use crate::cell::StaticCell;
 use crate::console::Console;
-use crate::nvidia::NvidiaDriver;
-use crate::pci::pci_read;
-use crate::vmware::VmwareDriver;
+use crate::drivers::nvidia::NvidiaDriver;
+use crate::os::pci::pci_read;
+use crate::drivers::vmware::VmwareDriver;
 
 /// Active GPU driver — enum dispatch avoids dynamic trait objects.
 pub enum ActiveGpu {
@@ -98,7 +98,7 @@ fn class_name(class: u8, subclass: u8) -> &'static str {
 
 fn pci_scan(con: &mut Console) {
     con.print(" PCI devices:\n");
-    crate::pci::pci_enumerate(|dev| {
+    crate::os::pci::pci_enumerate(|dev| {
         let id = pci_read(dev, 0x00);
         let vendor = (id & 0xFFFF) as u16;
         let device = ((id >> 16) & 0xFFFF) as u16;
@@ -136,10 +136,10 @@ fn try_activate(
         let pitch = gpu_dispatch!(&active, 0, |d| d.pitch());
         let height = gpu_dispatch!(&active, 0, |d| d.height());
         if pitch > 0 && height > 0 {
-            crate::pat::pat_set_write_combining(fb as u64, (pitch as u64) * (height as u64) * 2);
+            crate::os::pat::pat_set_write_combining(fb as u64, (pitch as u64) * (height as u64) * 2);
         }
         con.set_fb_addr(fb);
-        let gfx = unsafe { crate::graphics::GRAPHICS.get() };
+        let gfx = unsafe { crate::drivers::graphics::GRAPHICS.get() };
         gfx.set_fb_addr(fb);
         con.clear();
     }

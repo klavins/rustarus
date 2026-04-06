@@ -1,0 +1,2 @@
+10 PRINT FRE(0)
+20 END

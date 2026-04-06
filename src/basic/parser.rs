@@ -284,13 +284,17 @@ fn match_builtin(name: &[u8]) -> Option<fn(f64) -> Result<f64, &'static str>> {
         }),
         (4, b"PEEK") => Some(|addr| {
             let a = addr as usize;
-            if let Some(ptr) = crate::interrupts::keystate_ptr(a) {
+            if let Some(ptr) = crate::os::interrupts::keystate_ptr(a) {
                 return Ok(unsafe { core::ptr::read_volatile(ptr as *const u8) } as f64);
             }
             Ok(unsafe { core::ptr::read_volatile(a as *const u8) } as f64)
         }),
         (3, b"SIN") => Some(|n| Ok(sin_approx(n))),
         (3, b"COS") => Some(|n| Ok(cos_approx(n))),
+        (3, b"FRE") => Some(|n| {
+            if n >= 0.0 { Ok(crate::heap::heap_free_total() as f64) }
+            else { Ok(crate::heap::heap_used_total() as f64) }
+        }),
         _ => None,
     }
 }
@@ -316,11 +320,11 @@ fn match_builtin_const(name: &[u8]) -> Option<f64> {
     if name.len() != 4 { return None; }
     match &upper {
         b"SCRW" => {
-            let gfx = unsafe { crate::graphics::GRAPHICS.get() };
+            let gfx = unsafe { crate::drivers::graphics::GRAPHICS.get() };
             Some(gfx.virt_width() as f64)
         }
         b"SCRH" => {
-            let gfx = unsafe { crate::graphics::GRAPHICS.get() };
+            let gfx = unsafe { crate::drivers::graphics::GRAPHICS.get() };
             Some(gfx.virt_height() as f64)
         }
         _ => None,

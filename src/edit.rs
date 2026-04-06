@@ -19,8 +19,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 use kilo_rs::{Editor, EditorIo, Key};
 use crate::console::Console;
-use crate::interrupts;
-use crate::vt100::Vt100;
+use crate::os::interrupts;
+use crate::console::vt100::Vt100;
 
 const MAX_FILE_SIZE: usize = 32768;
 
@@ -69,14 +69,14 @@ impl<'a> EditorIo for RustarusIo<'a> {
 
     fn load_file(&mut self, name: &str) -> Option<Vec<u8>> {
         let mut buf = [0u8; MAX_FILE_SIZE];
-        match crate::fs::fs_load(name.as_bytes(), &mut buf, MAX_FILE_SIZE) {
+        match crate::os::fs::fs_load(name.as_bytes(), &mut buf, MAX_FILE_SIZE) {
             Ok(size) => Some(buf[..size].to_vec()),
             Err(_) => None,
         }
     }
 
     fn save_file(&mut self, name: &str, data: &[u8]) -> bool {
-        crate::fs::fs_save(name.as_bytes(), data).is_ok()
+        crate::os::fs::fs_save(name.as_bytes(), data).is_ok()
     }
 }
 
