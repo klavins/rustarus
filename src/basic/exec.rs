@@ -369,6 +369,14 @@ impl BasicState {
             TokenKind::Run => { self.run(con); Ok(()) }
             TokenKind::List => { self.list(con); Ok(()) }
             TokenKind::Clr => { self.clear(); Ok(()) }
+            TokenKind::Cls => {
+                if !self.gfx.is_null() && self.gfx().mode() >= 2 {
+                    self.gfx().clear();
+                } else {
+                    con.clear();
+                }
+                Ok(())
+            }
             TokenKind::Save => self.exec_save(tl, start + 1, con),
             TokenKind::Load => self.exec_load(tl, start + 1, con),
             TokenKind::Dir => { crate::os::fs::fs_list(con); Ok(()) }
