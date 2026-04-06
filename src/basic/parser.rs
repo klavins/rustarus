@@ -283,8 +283,11 @@ fn match_builtin(name: &[u8]) -> Option<fn(f64) -> Result<f64, &'static str>> {
             if n < 0.0 { Err("ILLEGAL QUANTITY") } else { Ok(sqrt_approx(n)) }
         }),
         (4, b"PEEK") => Some(|addr| {
-            let byte = unsafe { core::ptr::read_volatile(addr as usize as *const u8) };
-            Ok(byte as f64)
+            let a = addr as usize;
+            if let Some(ptr) = crate::interrupts::keystate_ptr(a) {
+                return Ok(unsafe { core::ptr::read_volatile(ptr as *const u8) } as f64);
+            }
+            Ok(unsafe { core::ptr::read_volatile(a as *const u8) } as f64)
         }),
         (3, b"SIN") => Some(|n| Ok(sin_approx(n))),
         (3, b"COS") => Some(|n| Ok(cos_approx(n))),

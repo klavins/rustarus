@@ -39,6 +39,10 @@ pub mod pci;
 pub mod serial;
 pub mod speaker;
 pub mod vmware;
+pub mod vt100;
+
+use vt100::Vt100;
+static VT100: StaticCell<Vt100> = StaticCell::new(Vt100::new());
 
 #[global_allocator]
 static ALLOCATOR: heap::HeapAllocator = heap::HeapAllocator;

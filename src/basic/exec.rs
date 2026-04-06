@@ -956,7 +956,11 @@ impl BasicState {
         let mut parser = Parser::new(tl, start, &mut self.vars, self as *const _);
         let addr = parser.parse_expr()? as usize;
         let (val, _) = self.parse_comma_arg(tl, parser.pos)?;
-        unsafe { core::ptr::write_volatile(addr as *mut u8, val as u8); }
+        if let Some(ptr) = crate::interrupts::keystate_ptr(addr) {
+            unsafe { core::ptr::write_volatile(ptr, val as u8); }
+        } else {
+            unsafe { core::ptr::write_volatile(addr as *mut u8, val as u8); }
+        }
         Ok(())
     }
 

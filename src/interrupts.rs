@@ -28,6 +28,18 @@ const PIC_EOI: u8 = 0x20;
 // PS/2 keyboard
 const KB_DATA_PORT: u16 = 0x60;
 
+// Special key codes (128+) for non-ASCII keys
+pub const KEY_ARROW_UP: i32 = 128;
+pub const KEY_ARROW_DOWN: i32 = 129;
+pub const KEY_ARROW_LEFT: i32 = 130;
+pub const KEY_ARROW_RIGHT: i32 = 131;
+pub const KEY_HOME: i32 = 132;
+pub const KEY_END: i32 = 133;
+pub const KEY_PAGE_UP: i32 = 134;
+pub const KEY_PAGE_DOWN: i32 = 135;
+pub const KEY_DELETE: i32 = 136;
+pub const KEY_INSERT: i32 = 137;
+
 // PIT
 const PIT_HZ: u32 = 200;
 const PIT_DIVISOR: u16 = (1193182 / PIT_HZ) as u16;
@@ -40,6 +52,25 @@ static mut KEYBUF_TAIL: usize = 0;
 
 static mut SHIFT_HELD: bool = false;
 static mut CTRL_HELD: bool = false;
+static mut E0_PREFIX: bool = false;
+
+/// Key state array — 128 bytes, 1=pressed, 0=released, indexed by scancode.
+pub static mut KEYSTATE: [u8; 128] = [0; 128];
+
+/// Pre-computed addresses for ISR access — avoids &raw mut codegen issues in interrupt context.
+pub static mut ISR_ADDRS: IsrAddrs = IsrAddrs {
+    keystate: 0,
+    shift_held: 0,
+    ctrl_held: 0,
+    e0_prefix: 0,
+};
+
+pub struct IsrAddrs {
+    pub keystate: usize,
+    pub shift_held: usize,
+    pub ctrl_held: usize,
+    pub e0_prefix: usize,
+}
 
 pub static mut TICKS: u64 = 0;
 
@@ -104,6 +135,28 @@ pub fn keybuf_try_read() -> Option<i32> {
         let c = (*&raw const KEYBUF)[tail];
         core::ptr::write_volatile(&raw mut KEYBUF_TAIL, (tail + 1) % KEYBUF_SIZE);
         Some(c)
+    }
+}
+
+/// Get a pointer to a keystate byte, or None if the address isn't in the keystate range.
+/// Maps virtual address 0x70000-0x7007F to the KEYSTATE array.
+pub fn keystate_ptr(addr: usize) -> Option<*mut u8> {
+    if addr >= 0x70000 && addr < 0x70080 {
+        let idx = addr - 0x70000;
+        unsafe {
+            let addrs = &raw const ISR_ADDRS;
+            Some(((*addrs).keystate as *mut u8).add(idx))
+        }
+    } else {
+        None
+    }
+}
+
+/// Flush all pending keys from the buffer.
+pub fn keybuf_flush() {
+    unsafe {
+        let head = core::ptr::read_volatile(&raw const KEYBUF_HEAD);
+        core::ptr::write_volatile(&raw mut KEYBUF_TAIL, head);
     }
 }
 
@@ -252,27 +305,65 @@ extern "C" fn keyboard_handler_inner() {
     unsafe {
         let scancode = inb(KB_DATA_PORT);
 
-        // Update keystate array at 0x70000 (128 bytes, 1=pressed, 0=released)
-        const KEYSTATE_BASE: *mut u8 = 0x70000 as *mut u8;
+        // Read pre-computed addresses (set once in init, safe to read here)
+        let addrs = &raw const ISR_ADDRS;
+        let ks_ptr = (*addrs).keystate as *mut u8;
+        let shift_ptr = (*addrs).shift_held as *mut bool;
+        let ctrl_ptr = (*addrs).ctrl_held as *mut bool;
+        let e0_ptr = (*addrs).e0_prefix as *mut bool;
+
+        // Handle E0 prefix for extended scancodes (arrow keys, etc.)
+        if scancode == 0xE0 {
+            core::ptr::write_volatile(e0_ptr, true);
+            outb(PIC1_CMD, PIC_EOI);
+            return;
+        }
+        let is_extended = core::ptr::read_volatile(e0_ptr as *const bool);
+        core::ptr::write_volatile(e0_ptr, false);
+
+        // Update keystate array (scancode & 0x7F is always 0..127)
+        let sc7 = (scancode & 0x7F) as usize;
         if scancode & 0x80 != 0 {
-            // Key release
-            core::ptr::write_volatile(KEYSTATE_BASE.add((scancode & 0x7F) as usize), 0);
+            core::ptr::write_volatile(ks_ptr.add(sc7), 0);
         } else {
-            // Key press
-            core::ptr::write_volatile(KEYSTATE_BASE.add(scancode as usize), 1);
+            core::ptr::write_volatile(ks_ptr.add(sc7), 1);
         }
 
-        // Modifier keys
+        // Extended keys (preceded by E0)
+        if is_extended {
+            if scancode & 0x80 == 0 {
+                let sc = scancode & 0x7F;
+                let key =
+                    if sc == 0x48 { KEY_ARROW_UP }
+                    else if sc == 0x50 { KEY_ARROW_DOWN }
+                    else if sc == 0x4B { KEY_ARROW_LEFT }
+                    else if sc == 0x4D { KEY_ARROW_RIGHT }
+                    else if sc == 0x47 { KEY_HOME }
+                    else if sc == 0x4F { KEY_END }
+                    else if sc == 0x49 { KEY_PAGE_UP }
+                    else if sc == 0x51 { KEY_PAGE_DOWN }
+                    else if sc == 0x53 { KEY_DELETE }
+                    else if sc == 0x52 { KEY_INSERT }
+                    else { 0 };
+                if key != 0 {
+                    keybuf_put(key);
+                }
+            }
+            outb(PIC1_CMD, PIC_EOI);
+            return;
+        }
+
+        // Modifier keys (non-extended)
         match scancode {
-            0x2A | 0x36 => core::ptr::write_volatile(&raw mut SHIFT_HELD, true),
-            0xAA | 0xB6 => core::ptr::write_volatile(&raw mut SHIFT_HELD, false),
-            0x1D => core::ptr::write_volatile(&raw mut CTRL_HELD, true),
-            0x9D => core::ptr::write_volatile(&raw mut CTRL_HELD, false),
+            0x2A | 0x36 => core::ptr::write_volatile(shift_ptr, true),
+            0xAA | 0xB6 => core::ptr::write_volatile(shift_ptr, false),
+            0x1D => core::ptr::write_volatile(ctrl_ptr, true),
+            0x9D => core::ptr::write_volatile(ctrl_ptr, false),
             sc if sc & 0x80 == 0 => {
                 let idx = sc as usize;
                 if idx < SCANCODE_LOWER.len() {
-                    let shift = core::ptr::read_volatile(&raw const SHIFT_HELD);
-                    let ctrl = core::ptr::read_volatile(&raw const CTRL_HELD);
+                    let shift = core::ptr::read_volatile(shift_ptr as *const bool);
+                    let ctrl = core::ptr::read_volatile(ctrl_ptr as *const bool);
                     let map = if shift { &SCANCODE_UPPER } else { &SCANCODE_LOWER };
                     let mut ascii = map[idx];
                     if ctrl && ascii.is_ascii_alphabetic() {
@@ -292,11 +383,13 @@ extern "C" fn keyboard_handler_inner() {
 
 // ISR stubs — naked functions that save/restore registers and call inner handlers
 
-macro_rules! isr_stub {
+// Light ISR stub — GPRs only (for simple handlers like the timer)
+macro_rules! isr_stub_light {
     ($name:ident, $handler:literal) => {
         #[unsafe(naked)]
         unsafe extern "C" fn $name() {
             naked_asm!(
+                "cld",
                 "push rax", "push rbx", "push rcx", "push rdx",
                 "push rbp", "push rsi", "push rdi",
                 "push r8", "push r9", "push r10", "push r11",
@@ -312,14 +405,61 @@ macro_rules! isr_stub {
     };
 }
 
-isr_stub!(isr_timer, "timer_handler_inner");
-isr_stub!(isr_keyboard, "keyboard_handler_inner");
+// Full ISR stub — GPRs + SSE (for handlers that may trigger SSE codegen)
+macro_rules! isr_stub_full {
+    ($name:ident, $handler:literal) => {
+        #[unsafe(naked)]
+        unsafe extern "C" fn $name() {
+            naked_asm!(
+                "cld",
+                "push rax", "push rbx", "push rcx", "push rdx",
+                "push rbp", "push rsi", "push rdi",
+                "push r8", "push r9", "push r10", "push r11",
+                "push r12", "push r13", "push r14", "push r15",
+                "sub rsp, 256",
+                "movdqu [rsp+0x00], xmm0",  "movdqu [rsp+0x10], xmm1",
+                "movdqu [rsp+0x20], xmm2",  "movdqu [rsp+0x30], xmm3",
+                "movdqu [rsp+0x40], xmm4",  "movdqu [rsp+0x50], xmm5",
+                "movdqu [rsp+0x60], xmm6",  "movdqu [rsp+0x70], xmm7",
+                "movdqu [rsp+0x80], xmm8",  "movdqu [rsp+0x90], xmm9",
+                "movdqu [rsp+0xA0], xmm10", "movdqu [rsp+0xB0], xmm11",
+                "movdqu [rsp+0xC0], xmm12", "movdqu [rsp+0xD0], xmm13",
+                "movdqu [rsp+0xE0], xmm14", "movdqu [rsp+0xF0], xmm15",
+                concat!("call ", $handler),
+                "movdqu xmm0,  [rsp+0x00]", "movdqu xmm1,  [rsp+0x10]",
+                "movdqu xmm2,  [rsp+0x20]", "movdqu xmm3,  [rsp+0x30]",
+                "movdqu xmm4,  [rsp+0x40]", "movdqu xmm5,  [rsp+0x50]",
+                "movdqu xmm6,  [rsp+0x60]", "movdqu xmm7,  [rsp+0x70]",
+                "movdqu xmm8,  [rsp+0x80]", "movdqu xmm9,  [rsp+0x90]",
+                "movdqu xmm10, [rsp+0xA0]", "movdqu xmm11, [rsp+0xB0]",
+                "movdqu xmm12, [rsp+0xC0]", "movdqu xmm13, [rsp+0xD0]",
+                "movdqu xmm14, [rsp+0xE0]", "movdqu xmm15, [rsp+0xF0]",
+                "add rsp, 256",
+                "pop r15", "pop r14", "pop r13", "pop r12",
+                "pop r11", "pop r10", "pop r9", "pop r8",
+                "pop rdi", "pop rsi", "pop rbp",
+                "pop rdx", "pop rcx", "pop rbx", "pop rax",
+                "iretq",
+            );
+        }
+    };
+}
+
+isr_stub_light!(isr_timer, "timer_handler_inner");
+isr_stub_full!(isr_keyboard, "keyboard_handler_inner");
 
 /// Initialize GDT, IDT, PIC, PIT, and enable interrupts.
 pub unsafe fn init() {
     unsafe {
         core::ptr::write_volatile(&raw mut KEYBUF_HEAD, 0);
         core::ptr::write_volatile(&raw mut KEYBUF_TAIL, 0);
+
+        // Pre-compute addresses for ISR — avoids &raw mut codegen in interrupt handler
+        let addrs = &raw mut ISR_ADDRS;
+        (*addrs).keystate = (&raw mut KEYSTATE) as usize;
+        (*addrs).shift_held = (&raw mut SHIFT_HELD) as usize;
+        (*addrs).ctrl_held = (&raw mut CTRL_HELD) as usize;
+        (*addrs).e0_prefix = (&raw mut E0_PREFIX) as usize;
 
         gdt_init();
 

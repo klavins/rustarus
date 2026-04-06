@@ -204,13 +204,13 @@ impl Console {
         crate::gpu::gpu_update(0, 0, self.fb_width, self.fb_height);
     }
 
-    fn flush_hold(&mut self) {
+    pub fn flush_hold(&mut self) {
         self.flush_held = true;
         self.dirty_min_y = 0;
         self.dirty_max_y = 0;
     }
 
-    fn flush_release(&mut self) {
+    pub fn flush_release(&mut self) {
         self.flush_held = false;
         if self.dirty_min_y < self.dirty_max_y {
             let y0 = self.dirty_min_y;
@@ -287,8 +287,12 @@ impl Console {
         // Mirror to serial port for test capture
         if c == b'\n' { crate::serial::serial_putchar(b'\r'); }
         crate::serial::serial_putchar(c);
-        self.draw_cursor(false);
+        // Route through VT100 interpreter
+        let vt = unsafe { crate::VT100.get() };
+        vt.process(self, c);
+    }
 
+    fn putchar_inner(&mut self, c: u8) {
         if c == b'\r' {
             self.cursor_col = 0;
             self.wrap_pending = false;
@@ -358,4 +362,44 @@ impl Console {
         self.fg_color = COLOR32_MAP[fg as usize];
         self.bg_color = COLOR32_MAP[bg as usize];
     }
+
+    /// Putchar without serial mirror (for VT100 output that's already captured).
+    pub fn putchar_no_serial(&mut self, c: u8) {
+        self.draw_cursor(false);
+        self.putchar_inner(c);
+    }
+
+    pub fn set_cursor(&mut self, row: u32, col: u32) {
+        self.draw_cursor(false);
+        let row = row.min(self.fb_rows.saturating_sub(1));
+        let col = col.min(self.fb_cols.saturating_sub(1));
+        self.cursor_row = row;
+        self.cursor_col = col;
+        self.wrap_pending = false;
+        self.draw_cursor(true);
+        self.flush_region(self.cursor_row * FONT_H, FONT_H);
+    }
+
+    pub fn get_cursor(&self) -> (u32, u32) {
+        (self.cursor_row, self.cursor_col)
+    }
+
+    pub fn get_size(&self) -> (u32, u32) {
+        (self.fb_rows, self.fb_cols)
+    }
+
+    pub fn clear_to_eol(&mut self) {
+        self.draw_cursor(false);
+        for c in self.cursor_col..self.fb_cols {
+            self.draw_char(c, self.cursor_row, b' ', self.fg_color, self.bg_color);
+        }
+        self.draw_cursor(true);
+        self.flush_region(self.cursor_row * FONT_H, FONT_H);
+    }
+
+    pub fn show_cursor(&mut self, show: bool) {
+        self.draw_cursor(show);
+        self.flush_region(self.cursor_row * FONT_H, FONT_H);
+    }
+
 }

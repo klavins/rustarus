@@ -18,22 +18,28 @@
 use crate::io::{outb, inb};
 
 const COM1: u16 = 0x3F8;
+static mut PORT_EXISTS: bool = false;
 
 pub fn serial_init() {
     unsafe {
-        outb(COM1 + 1, 0x00); // Disable interrupts
-        outb(COM1 + 3, 0x80); // Enable DLAB (set baud rate divisor)
-        outb(COM1 + 0, 0x01); // 115200 baud (divisor 1)
         outb(COM1 + 1, 0x00);
-        outb(COM1 + 3, 0x03); // 8 bits, no parity, one stop bit
-        outb(COM1 + 2, 0xC7); // Enable FIFO, clear, 14-byte threshold
+        outb(COM1 + 3, 0x80);
+        outb(COM1 + 0, 0x01);
+        outb(COM1 + 1, 0x00);
+        outb(COM1 + 3, 0x03);
+        outb(COM1 + 2, 0xC7);
+        // Probe: check if the line status register reads back sensibly
+        let lsr = inb(COM1 + 5);
+        PORT_EXISTS = lsr != 0xFF;
     }
 }
 
 pub fn serial_putchar(c: u8) {
     unsafe {
-        // Wait for transmit buffer empty
-        while inb(COM1 + 5) & 0x20 == 0 {}
+        if !PORT_EXISTS { return; }
+        for _ in 0..10000u32 {
+            if inb(COM1 + 5) & 0x20 != 0 { break; }
+        }
         outb(COM1, c);
     }
 }
