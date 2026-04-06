@@ -57,12 +57,20 @@ static mut E0_PREFIX: bool = false;
 /// Key state array — 128 bytes, 1=pressed, 0=released, indexed by scancode.
 pub static mut KEYSTATE: [u8; 128] = [0; 128];
 
+/// System info bytes readable via PEEK:
+///   0x70080 = last scancode pressed
+///   0x70081 = last ASCII value pressed
+static mut LAST_SCANCODE: u8 = 0;
+static mut LAST_ASCII: u8 = 0;
+
 /// Pre-computed addresses for ISR access — avoids &raw mut codegen issues in interrupt context.
 pub static mut ISR_ADDRS: IsrAddrs = IsrAddrs {
     keystate: 0,
     shift_held: 0,
     ctrl_held: 0,
     e0_prefix: 0,
+    last_scancode: 0,
+    last_ascii: 0,
 };
 
 pub struct IsrAddrs {
@@ -70,6 +78,8 @@ pub struct IsrAddrs {
     pub shift_held: usize,
     pub ctrl_held: usize,
     pub e0_prefix: usize,
+    pub last_scancode: usize,
+    pub last_ascii: usize,
 }
 
 pub static mut TICKS: u64 = 0;
@@ -138,17 +148,24 @@ pub fn keybuf_try_read() -> Option<i32> {
     }
 }
 
-/// Get a pointer to a keystate byte, or None if the address isn't in the keystate range.
-/// Maps virtual address 0x70000-0x7007F to the KEYSTATE array.
+/// Get a pointer to a system info byte, or None if the address isn't mapped.
+/// Maps:
+///   0x70000-0x7007F  Key state (128 bytes, 1=pressed, 0=released)
+///   0x70080          Last scancode pressed
+///   0x70081          Last ASCII value pressed
 pub fn keystate_ptr(addr: usize) -> Option<*mut u8> {
-    if addr >= 0x70000 && addr < 0x70080 {
-        let idx = addr - 0x70000;
-        unsafe {
-            let addrs = &raw const ISR_ADDRS;
+    unsafe {
+        let addrs = &raw const ISR_ADDRS;
+        if addr >= 0x70000 && addr < 0x70080 {
+            let idx = addr - 0x70000;
             Some(((*addrs).keystate as *mut u8).add(idx))
+        } else if addr == 0x70080 {
+            Some((*addrs).last_scancode as *mut u8)
+        } else if addr == 0x70081 {
+            Some((*addrs).last_ascii as *mut u8)
+        } else {
+            None
         }
-    } else {
-        None
     }
 }
 
@@ -327,6 +344,7 @@ extern "C" fn keyboard_handler_inner() {
             core::ptr::write_volatile(ks_ptr.add(sc7), 0);
         } else {
             core::ptr::write_volatile(ks_ptr.add(sc7), 1);
+            core::ptr::write_volatile((*addrs).last_scancode as *mut u8, scancode);
         }
 
         // Extended keys (preceded by E0)
@@ -369,9 +387,13 @@ extern "C" fn keyboard_handler_inner() {
                     if ctrl && ascii.is_ascii_alphabetic() {
                         ascii &= 0x1F;
                     }
+                    core::ptr::write_volatile((*addrs).last_ascii as *mut u8, ascii);
                     if ascii != 0 {
                         keybuf_put(ascii as i32);
                     }
+                } else {
+                    // Key outside scancode table (F1-F12, etc.) — clear last_ascii
+                    core::ptr::write_volatile((*addrs).last_ascii as *mut u8, 0);
                 }
             }
             _ => {}
@@ -460,6 +482,8 @@ pub unsafe fn init() {
         (*addrs).shift_held = (&raw mut SHIFT_HELD) as usize;
         (*addrs).ctrl_held = (&raw mut CTRL_HELD) as usize;
         (*addrs).e0_prefix = (&raw mut E0_PREFIX) as usize;
+        (*addrs).last_scancode = (&raw mut LAST_SCANCODE) as usize;
+        (*addrs).last_ascii = (&raw mut LAST_ASCII) as usize;
 
         gdt_init();
 

@@ -254,7 +254,8 @@ impl<'a> Parser<'a> {
 
     fn match_const(&self, name: &[u8]) -> Option<f64> {
         let state = unsafe { &*self.state };
-        match_builtin_const(name, state.scrw, state.scrh)
+        let gfx = unsafe { &*state.gfx };
+        match_builtin_const(name, gfx.virt_width(), gfx.virt_height())
     }
 
     /// Array subscript: (i) or (i,j)

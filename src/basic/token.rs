@@ -227,6 +227,77 @@ fn match_keyword(word: &[u8]) -> Option<TokenKind> {
     None
 }
 
+/// Parse a number (decimal or 0x hex) starting at line[i]. Returns new position.
+fn tokenize_number(line: &[u8], len: usize, mut i: usize, tok: &mut Token) -> usize {
+    let c = line[i];
+    if c == b'0' && i + 1 < len && (line[i + 1] == b'x' || line[i + 1] == b'X') {
+        i += 2;
+        let mut val: u64 = 0;
+        while i < len {
+            let h = line[i];
+            if h.is_ascii_digit() {
+                val = val * 16 + (h - b'0') as u64;
+            } else if h >= b'a' && h <= b'f' {
+                val = val * 16 + (h - b'a' + 10) as u64;
+            } else if h >= b'A' && h <= b'F' {
+                val = val * 16 + (h - b'A' + 10) as u64;
+            } else {
+                break;
+            }
+            i += 1;
+        }
+        tok.kind = TokenKind::Number;
+        tok.num_val = val as f64;
+    } else {
+        tok.kind = TokenKind::Number;
+        let (val, consumed) = super::value::parse_f64_bytes(&line[i..len]);
+        tok.num_val = val;
+        i += consumed;
+    }
+    i
+}
+
+/// Parse a quoted string literal starting at the opening `"`. Returns new position.
+fn tokenize_string(line: &[u8], len: usize, mut i: usize, tok: &mut Token) -> usize {
+    i += 1; // skip opening quote
+    tok.kind = TokenKind::StringLit;
+    tok.str_len = 0;
+    while i < len && line[i] != b'"' {
+        if tok.str_len < MAX_TOKEN_LEN - 1 {
+            tok.str_buf[tok.str_len] = line[i];
+            tok.str_len += 1;
+        }
+        i += 1;
+    }
+    if i < len { i += 1; } // skip closing quote
+    i
+}
+
+/// Parse an identifier or keyword. Returns (new position, true if REM).
+fn tokenize_ident(line: &[u8], len: usize, mut i: usize, tok: &mut Token) -> (usize, bool) {
+    tok.str_len = 0;
+    while i < len && (line[i].is_ascii_alphanumeric() || line[i] == b'_') {
+        if tok.str_len < MAX_TOKEN_LEN - 1 {
+            tok.str_buf[tok.str_len] = line[i];
+            tok.str_len += 1;
+        }
+        i += 1;
+    }
+
+    if tok.str_len == 1 && i < len && line[i] == b'$' {
+        i += 1;
+        tok.kind = TokenKind::StrIdent;
+    } else if let Some(kw) = match_keyword(&tok.str_buf[..tok.str_len]) {
+        tok.kind = kw;
+        if kw == TokenKind::Rem {
+            return (i, true);
+        }
+    } else {
+        tok.kind = TokenKind::Ident;
+    }
+    (i, false)
+}
+
 pub fn tokenize(line: &[u8], len: usize, out: &mut TokenLine) -> Result<(), &'static str> {
     out.count = 0;
     let mut i = 0;
@@ -243,76 +314,22 @@ pub fn tokenize(line: &[u8], len: usize, out: &mut TokenLine) -> Result<(), &'st
         *tok = Token::empty();
 
         if c.is_ascii_digit() || (c == b'.' && i + 1 < len && line[i + 1].is_ascii_digit()) {
-            if c == b'0' && i + 1 < len && (line[i + 1] == b'x' || line[i + 1] == b'X') {
-                i += 2;
-                let mut val: u64 = 0;
-                while i < len {
-                    let h = line[i];
-                    if h.is_ascii_digit() {
-                        val = val * 16 + (h - b'0') as u64;
-                    } else if h >= b'a' && h <= b'f' {
-                        val = val * 16 + (h - b'a' + 10) as u64;
-                    } else if h >= b'A' && h <= b'F' {
-                        val = val * 16 + (h - b'A' + 10) as u64;
-                    } else {
-                        break;
-                    }
-                    i += 1;
-                }
-                tok.kind = TokenKind::Number;
-                tok.num_val = val as f64;
-            } else {
-                tok.kind = TokenKind::Number;
-                let (val, consumed) = super::value::parse_f64_bytes(&line[i..len]);
-                tok.num_val = val;
-                i += consumed;
-            }
+            i = tokenize_number(line, len, i, tok);
             out.count += 1;
             continue;
         }
 
         if c == b'"' {
-            i += 1;
-            tok.kind = TokenKind::StringLit;
-            tok.str_len = 0;
-            while i < len && line[i] != b'"' {
-                if tok.str_len < MAX_TOKEN_LEN - 1 {
-                    tok.str_buf[tok.str_len] = line[i];
-                    tok.str_len += 1;
-                }
-                i += 1;
-            }
-            if i < len {
-                i += 1;
-            }
+            i = tokenize_string(line, len, i, tok);
             out.count += 1;
             continue;
         }
 
         if c.is_ascii_alphabetic() {
-            tok.str_len = 0;
-            while i < len && (line[i].is_ascii_alphanumeric() || line[i] == b'_') {
-                if tok.str_len < MAX_TOKEN_LEN - 1 {
-                    tok.str_buf[tok.str_len] = line[i];
-                    tok.str_len += 1;
-                }
-                i += 1;
-            }
-
-            // Check for string variable: single letter + $
-            if tok.str_len == 1 && i < len && line[i] == b'$' {
-                i += 1; // consume $
-                tok.kind = TokenKind::StrIdent;
-            } else if let Some(kw) = match_keyword(&tok.str_buf[..tok.str_len]) {
-                tok.kind = kw;
-                if kw == TokenKind::Rem {
-                    out.count += 1;
-                    break;
-                }
-            } else {
-                tok.kind = TokenKind::Ident;
-            }
+            let is_rem;
+            (i, is_rem) = tokenize_ident(line, len, i, tok);
             out.count += 1;
+            if is_rem { break; }
             continue;
         }
 

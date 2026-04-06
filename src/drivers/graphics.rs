@@ -23,7 +23,7 @@ static MODE_TARGET_WIDTH: [u32; 6] = [0, 0, 320, 640, 800, 0];
 
 pub static GRAPHICS: StaticCell<Graphics> = StaticCell::new(Graphics::new());
 
-fn noop_gpu_update(_: u32, _: u32, _: u32, _: u32) {}
+use crate::console::noop_gpu_update;
 fn noop_can_flip() -> bool { false }
 fn noop_page_addr(_: u8) -> *mut u8 { core::ptr::null_mut() }
 fn noop_set_page(_: u8) {}
@@ -168,6 +168,7 @@ impl Graphics {
                     ptr::copy_nonoverlapping(self.shadow, self.saved_fb, self.fb_size as usize);
                 }
             }
+            self.mode = mode;
             self.setup_virtual_res(mode);
             self.cursor_x = 0;
             self.cursor_y = 0;
@@ -176,6 +177,7 @@ impl Graphics {
             self.present();
         } else if was_graphics && !will_be_graphics {
             // Graphics → Text: restore text screen, reset virtual resolution
+            self.mode = mode;
             self.virt_width = 0;
             self.virt_height = 0;
             self.pixel_scale = 1;
@@ -185,17 +187,19 @@ impl Graphics {
                     ptr::copy_nonoverlapping(self.shadow, self.fb_addr, self.fb_size as usize);
                 }
             }
+            (self.gpu_update_fn)(0, 0, self.fb_width, self.fb_height);
             con.set_color(crate::console::Color::White, crate::console::Color::Black);
         } else if was_graphics && will_be_graphics {
             // Graphics → Graphics: just reconfigure
+            self.mode = mode;
             self.setup_virtual_res(mode);
             self.cursor_x = 0;
             self.cursor_y = 0;
             self.clear_buffer();
             self.present();
+        } else {
+            self.mode = mode;
         }
-
-        self.mode = mode;
     }
 
     fn clear_buffer(&mut self) {

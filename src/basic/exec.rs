@@ -76,8 +76,6 @@ pub struct BasicState {
     data_ptr: usize,
     named_vars: Vec<NamedVar>,
     pub(super) gfx: *mut crate::drivers::graphics::Graphics,
-    pub scrw: u32,
-    pub scrh: u32,
 }
 
 impl BasicState {
@@ -97,15 +95,11 @@ impl BasicState {
             data_ptr: 0,
             named_vars: Vec::new(),
             gfx: core::ptr::null_mut(),
-            scrw: 0,
-            scrh: 0,
         }
     }
 
     pub fn init_gfx(&mut self, gfx: &mut crate::drivers::graphics::Graphics) {
         self.gfx = gfx as *mut _;
-        self.scrw = gfx.virt_width();
-        self.scrh = gfx.virt_height();
     }
 
     fn find_line_or_after(&self, number: u16) -> usize {
@@ -324,6 +318,10 @@ impl BasicState {
             }
         }
         self.running = false;
+        // Restore text mode if program ended while in graphics mode
+        if !self.gfx.is_null() && self.gfx().mode() >= 2 {
+            self.gfx().set_mode(0, con);
+        }
     }
 
     fn print_error(&mut self, con: &mut Console, msg: &str, line_idx: Option<usize>) {
@@ -741,8 +739,6 @@ impl BasicState {
         let mut parser = self.parser(tl, start);
         let mode = parser.parse_expr()? as u8;
         self.gfx().set_mode(mode, con);
-        self.scrw = self.gfx().virt_width();
-        self.scrh = self.gfx().virt_height();
         Ok(())
     }
 
@@ -844,6 +840,7 @@ impl BasicState {
             };
             if tl.get(pos).kind != TokenKind::RParen { return Err("SYNTAX ERROR"); }
             let total = if dim2 > 0 { dim1 as usize * dim2 as usize } else { dim1 as usize };
+            if total == 0 || total > 10000 { return Err("ILLEGAL QUANTITY"); }
             if self.array_find(idx).is_some() { return Err("REDIM ERROR"); }
             self.arrays.push(Array {
                 name: idx as u8, dim1, dim2, vals: alloc::vec![0.0; total],
@@ -945,6 +942,29 @@ impl BasicState {
                 };
                 self.data_ptr += 1;
                 self.string_set(idx, &val)?;
+            } else if tl.get(pos).kind == TokenKind::Ident
+                && tl.get(pos + 1).kind == TokenKind::LParen
+            {
+                // READ A(I) or READ A(I,J) — array element
+                let val = match &self.data_store[self.data_ptr] {
+                    DataItem::Num(n) => *n,
+                    DataItem::Str(_) => return Err("TYPE MISMATCH"),
+                };
+                self.data_ptr += 1;
+                let idx = var_index(tl.get(pos))?;
+                let mut parser = self.parser(tl, pos + 2);
+                let i1 = parser.parse_condition()? as usize;
+                let mut apos = parser.pos;
+                let i2 = if tl.get(apos).kind == TokenKind::Comma {
+                    let mut p2 = self.parser(tl, apos + 1);
+                    let v = p2.parse_condition()? as usize;
+                    apos = p2.pos;
+                    v
+                } else { 0 };
+                if tl.get(apos).kind == TokenKind::RParen {
+                    pos = apos; // will be incremented at bottom of loop
+                }
+                self.array_set(idx, i1, i2, val)?;
             } else if tl.get(pos).kind == TokenKind::Ident {
                 let tok = tl.get(pos);
                 let val = match &self.data_store[self.data_ptr] {
@@ -1030,7 +1050,7 @@ impl BasicState {
                                 self.deserialize_program(buf, size);
                                 con.print("  LOADED\n");
                             }
-                            Err(e) => { con.print("  "); con.print(e); con.putchar(b'\n'); }
+                            Err(e) => dos_print_result(con, Err(e), ""),
                         }
                     }
                 }
@@ -1039,19 +1059,13 @@ impl BasicState {
                     if len > 0 {
                         let buf = Self::disk_buf();
                         let size = self.serialize_program(buf);
-                        match crate::os::fs::fs_save(&name[..len], &buf[..size]) {
-                            Ok(()) => con.print("  SAVED\n"),
-                            Err(e) => { con.print("  "); con.print(e); con.putchar(b'\n'); }
-                        }
+                        dos_print_result(con, crate::os::fs::fs_save(&name[..len], &buf[..size]), "  SAVED\n");
                     }
                 }
                 b'E' => {
                     let (name, len) = dos_prompt_filename(con);
                     if len > 0 {
-                        match crate::os::fs::fs_delete(&name[..len]) {
-                            Ok(()) => con.print("  DELETED\n"),
-                            Err(e) => { con.print("  "); con.print(e); con.putchar(b'\n'); }
-                        }
+                        dos_print_result(con, crate::os::fs::fs_delete(&name[..len]), "  DELETED\n");
                     }
                 }
                 b'F' => {
@@ -1059,15 +1073,19 @@ impl BasicState {
                     let mut buf = [0u8; 4];
                     let len = super::read_line(con, &mut buf);
                     if len > 0 && (buf[0] == b'Y' || buf[0] == b'y') {
-                        match crate::os::fs::fs_format() {
-                            Ok(()) => con.print("  FORMATTED\n"),
-                            Err(e) => { con.print("  "); con.print(e); con.putchar(b'\n'); }
-                        }
+                        dos_print_result(con, crate::os::fs::fs_format(), "  FORMATTED\n");
                     }
                 }
                 _ => {}
             }
         }
+    }
+}
+
+fn dos_print_result(con: &mut Console, result: Result<(), &str>, msg: &str) {
+    match result {
+        Ok(()) => con.print(msg),
+        Err(e) => { con.print("  "); con.print(e); con.putchar(b'\n'); }
     }
 }
 

@@ -18,7 +18,7 @@
 use crate::console::font::FONT_8X16;
 use core::ptr;
 
-fn noop_gpu_update(_: u32, _: u32, _: u32, _: u32) {}
+pub fn noop_gpu_update(_: u32, _: u32, _: u32, _: u32) {}
 
 const VT_MAX_PARAMS: usize = 4;
 
