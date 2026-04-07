@@ -459,4 +459,5 @@ impl NvidiaDriver {
     pub fn page_addr(&self, _page: u8) -> *mut u8 { self.gop_fb }
     pub fn set_page(&mut self, _page: u8) {}
     pub fn update(&mut self, _x: u32, _y: u32, _w: u32, _h: u32) {}
+    pub fn wait_vsync(&self) {}
 }

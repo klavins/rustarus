@@ -27,6 +27,7 @@ use crate::console::noop_gpu_update;
 fn noop_can_flip() -> bool { false }
 fn noop_page_addr(_: u8) -> *mut u8 { core::ptr::null_mut() }
 fn noop_set_page(_: u8) {}
+fn noop_vsync() {}
 
 pub struct Graphics {
     fb_addr: *mut u8,
@@ -45,6 +46,7 @@ pub struct Graphics {
     cursor_x: i32,
     cursor_y: i32,
     draw_color: u32,
+    draw_xor: bool,
     draw_page: u8,
     dirty_y0: u32,
     dirty_y1: u32,
@@ -53,6 +55,7 @@ pub struct Graphics {
     gpu_can_flip: fn() -> bool,
     gpu_page_addr: fn(u8) -> *mut u8,
     gpu_set_page: fn(u8),
+    gpu_wait_vsync: fn(),
 }
 
 unsafe impl Send for Graphics {}
@@ -76,6 +79,7 @@ impl Graphics {
             cursor_x: 0,
             cursor_y: 0,
             draw_color: 0x00FFFFFF,
+            draw_xor: false,
             draw_page: 0,
             dirty_y0: 0,
             dirty_y1: 0,
@@ -83,6 +87,7 @@ impl Graphics {
             gpu_can_flip: noop_can_flip,
             gpu_page_addr: noop_page_addr,
             gpu_set_page: noop_set_page,
+            gpu_wait_vsync: noop_vsync,
         }
     }
 
@@ -92,11 +97,13 @@ impl Graphics {
         can_flip: fn() -> bool,
         page_addr: fn(u8) -> *mut u8,
         set_page: fn(u8),
+        wait_vsync: fn(),
     ) {
         self.gpu_update_fn = update;
         self.gpu_can_flip = can_flip;
         self.gpu_page_addr = page_addr;
         self.gpu_set_page = set_page;
+        self.gpu_wait_vsync = wait_vsync;
     }
 
     pub fn init(
@@ -162,7 +169,8 @@ impl Graphics {
         let will_be_graphics = mode >= 2;
 
         if !was_graphics && will_be_graphics {
-            // Text → Graphics: save text screen
+            // Text → Graphics: save text screen, suppress console flushes
+            con.set_graphics_active(true);
             if !self.saved_fb.is_null() && !self.shadow.is_null() {
                 unsafe {
                     ptr::copy_nonoverlapping(self.shadow, self.saved_fb, self.fb_size as usize);
@@ -173,6 +181,7 @@ impl Graphics {
             self.cursor_x = 0;
             self.cursor_y = 0;
             self.draw_color = vga_to_rgb32(15); // white
+            self.draw_xor = false;
             self.clear_buffer();
             self.present();
         } else if was_graphics && !will_be_graphics {
@@ -187,6 +196,7 @@ impl Graphics {
                     ptr::copy_nonoverlapping(self.shadow, self.fb_addr, self.fb_size as usize);
                 }
             }
+            con.set_graphics_active(false);
             (self.gpu_update_fn)(0, 0, self.fb_width, self.fb_height);
             con.set_color(crate::console::Color::White, crate::console::Color::Black);
         } else if was_graphics && will_be_graphics {
@@ -243,12 +253,18 @@ impl Graphics {
         let px0 = self.offset_x + x as u32 * self.pixel_scale;
         let py0 = self.offset_y + y as u32 * self.pixel_scale;
         let scale = self.pixel_scale;
+        let xor = self.draw_xor;
         unsafe {
             for sy in 0..scale {
                 let row_offset = ((py0 + sy) * self.fb_pitch + px0 * 4) as usize;
                 let row_ptr = self.shadow.add(row_offset) as *mut u32;
                 for sx in 0..scale {
-                    ptr::write(row_ptr.add(sx as usize), color);
+                    let p = row_ptr.add(sx as usize);
+                    if xor {
+                        ptr::write(p, ptr::read(p) ^ color);
+                    } else {
+                        ptr::write(p, color);
+                    }
                 }
             }
         }
@@ -312,7 +328,12 @@ impl Graphics {
             for py in phys_top..phys_bottom {
                 let row_offset = (py * self.fb_pitch + phys_left * 4) as usize;
                 let row_ptr = self.shadow.add(row_offset) as *mut u32;
-                core::slice::from_raw_parts_mut(row_ptr, phys_width as usize).fill(color);
+                let row = core::slice::from_raw_parts_mut(row_ptr, phys_width as usize);
+                if self.draw_xor {
+                    for px in row.iter_mut() { *px ^= color; }
+                } else {
+                    row.fill(color);
+                }
             }
         }
         self.dirty_mark(phys_top, phys_bottom);
@@ -322,6 +343,10 @@ impl Graphics {
 
     pub fn set_color(&mut self, idx: u8) {
         self.draw_color = vga_to_rgb32(idx);
+    }
+
+    pub fn set_draw_mode(&mut self, mode: u8) {
+        self.draw_xor = mode != 0;
     }
 
     pub fn pos(&mut self, x: i32, y: i32) {
@@ -372,6 +397,8 @@ impl Graphics {
             let y1 = self.dirty_y1.min(self.fb_height);
             let offset = (y0 * self.fb_pitch) as usize;
             let bytes = ((y1 - y0) * self.fb_pitch) as usize;
+            // Wait for vblank before writing to VRAM to avoid tearing
+            (self.gpu_wait_vsync)();
             unsafe {
                 ptr::copy_nonoverlapping(
                     self.shadow.add(offset),

@@ -15,8 +15,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::os::io::{outw, inw};
+use crate::os::io::{outw, inw, inb};
 use crate::os::pci::{PciDevice, pci_find_vendor, pci_read_bar, pci_enable_device};
+
+const VGA_STATUS: u16 = 0x3DA;
+const VRETRACE_BIT: u8 = 0x08;
 
 const VBE_INDEX: u16 = 0x01CE;
 const VBE_DATA: u16 = 0x01CF;
@@ -124,10 +127,26 @@ impl BgaDriver {
 
     pub fn set_page(&mut self, page: u8) {
         let y_off = if page == 0 { 0 } else { self.height as u16 };
+        // Wait for vsync to avoid tearing
+        unsafe {
+            // Wait until not in retrace (catch tail end of current retrace)
+            while inb(VGA_STATUS) & VRETRACE_BIT != 0 {}
+            // Wait until retrace begins
+            while inb(VGA_STATUS) & VRETRACE_BIT == 0 {}
+        }
         vbe_write(VBE_Y_OFFSET, y_off);
     }
 
     pub fn update(&mut self, _x: u32, _y: u32, _w: u32, _h: u32) {
-        // BGA doesn't need update notifications
+        // BGA doesn't need update notifications — VRAM is live
+    }
+
+    /// Wait for vertical retrace to begin. Call before writing to VRAM
+    /// to minimize tearing on displays that scan from VRAM continuously.
+    pub fn wait_vsync(&self) {
+        unsafe {
+            while inb(VGA_STATUS) & VRETRACE_BIT != 0 {}
+            while inb(VGA_STATUS) & VRETRACE_BIT == 0 {}
+        }
     }
 }

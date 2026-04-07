@@ -1,0 +1,55 @@
+1 REM ====================
+2 REM Bouncing Ball (XOR)
+3 REM ====================
+
+10 LET X = 100
+20 LET Y = 700
+30 LET DX = 2.5
+40 LET DY = 0
+50 LET R = 40
+60 LET G = 0.5
+70 LET KR = 0.8
+
+100 GRAPHICS 5
+110 DRAWMODE 1
+120 COLOR 11
+
+200 REM Draw ball at initial position
+210 GOSUB 1000
+220 SHOW
+
+300 REM Main loop
+310 LET DY = DY - G
+320 IF Y + DY <= R THEN LET DY = -KR * DY
+330 IF X + DX <= R THEN LET DX = -DX
+340 IF X + DX >= SCRW - R THEN LET DX = -DX
+
+350 REM XOR erase ball at old position
+360 GOSUB 1000
+
+370 REM Update position
+380 LET X = X + DX
+390 LET Y = Y + DY
+
+400 REM XOR draw ball at new position
+410 GOSUB 1000
+420 SHOW
+430 DELAY 5
+
+440 LET K = PEEK(0x70081)
+450 IF K <> 0 THEN GOTO 310
+460 DRAWMODE 0
+470 GRAPHICS 0
+480 GOTO 9999
+
+1000 REM ---- Filled Circle (XOR) ----
+1010 LET CX = X
+1020 LET CY = SCRH - Y
+1030 FOR I = -R TO R
+1040 LET W = INT(SQR(R * R - I * I))
+1050 POS CX - W, CY + I
+1060 FILLTO CX + W, CY + I
+1070 NEXT I
+1080 RETURN
+
+9999 PRINT "DONE"

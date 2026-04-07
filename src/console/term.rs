@@ -96,6 +96,7 @@ pub struct Console {
     dirty_max_y: u32,     // bottom of dirty region (pixel row, exclusive)
     fg_color: u32,
     bg_color: u32,
+    graphics_active: bool,
     // GPU update callback (set after gpu_init, avoids circular dependency)
     gpu_update_fn: fn(u32, u32, u32, u32),
     // VT100 state (inlined to avoid separate global)
@@ -128,6 +129,7 @@ impl Console {
             dirty_max_y: 0,
             fg_color: COLOR32_MAP[15],
             bg_color: COLOR32_MAP[0],
+            graphics_active: false,
             gpu_update_fn: noop_gpu_update,
             vt_state: VtState::Normal,
             vt_params: [0; VT_MAX_PARAMS],
@@ -189,7 +191,7 @@ impl Console {
     }
 
     fn flush_region(&mut self, y0: u32, rows: u32) {
-        if self.fb_shadow.is_null() {
+        if self.fb_shadow.is_null() || self.graphics_active {
             return;
         }
         if self.flush_held {
@@ -221,7 +223,7 @@ impl Console {
     }
 
     fn flush_all(&mut self) {
-        if self.fb_shadow.is_null() {
+        if self.fb_shadow.is_null() || self.graphics_active {
             return;
         }
         if self.flush_held {
@@ -238,6 +240,10 @@ impl Console {
 
     pub fn set_gpu_update(&mut self, f: fn(u32, u32, u32, u32)) {
         self.gpu_update_fn = f;
+    }
+
+    pub fn set_graphics_active(&mut self, active: bool) {
+        self.graphics_active = active;
     }
 
     pub fn flush_hold(&mut self) {

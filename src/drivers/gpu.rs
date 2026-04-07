@@ -50,6 +50,7 @@ impl ActiveGpu {
     pub fn pitch(&self) -> u32 { gpu_dispatch!(self, 0, |d| d.pitch()) }
     pub fn framebuffer(&self) -> *mut u8 { gpu_dispatch!(self, core::ptr::null_mut(), |d| d.framebuffer()) }
     pub fn name(&self) -> &'static str { gpu_dispatch!(self, "none", |d| d.name()) }
+    pub fn wait_vsync(&self) { gpu_dispatch!(self, {}, |d| d.wait_vsync()) }
 }
 
 static GPU: StaticCell<ActiveGpu> = StaticCell::new(ActiveGpu::None);
@@ -202,4 +203,9 @@ pub fn gpu_page_addr(page: u8) -> *mut u8 {
 pub fn gpu_set_page(page: u8) {
     let gpu = unsafe { GPU.get() };
     gpu.set_page(page);
+}
+
+pub fn gpu_wait_vsync() {
+    let gpu = unsafe { GPU.get() };
+    gpu.wait_vsync();
 }

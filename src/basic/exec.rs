@@ -387,6 +387,12 @@ impl BasicState {
             TokenKind::Drawto => self.exec_drawto(tl, start + 1),
             TokenKind::Fillto => self.exec_fillto(tl, start + 1),
             TokenKind::ColorCmd => self.exec_color(tl, start + 1),
+            TokenKind::Drawmode => {
+                let mut parser = self.parser(tl, start + 1);
+                let mode = parser.parse_expr()? as u8;
+                self.gfx().set_draw_mode(mode);
+                Ok(())
+            }
             TokenKind::Pos => self.exec_pos(tl, start + 1),
             TokenKind::TextCmd => self.exec_text(tl, start + 1),
             TokenKind::Show => { self.gfx().present(); Ok(()) }

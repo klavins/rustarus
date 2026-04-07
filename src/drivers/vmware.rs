@@ -185,7 +185,7 @@ impl VmwareDriver {
     pub fn height(&self) -> u32 { self.height }
     pub fn pitch(&self) -> u32 { self.pitch }
 
-    pub fn can_flip(&self) -> bool { self.flip }
+    pub fn can_flip(&self) -> bool { false }
 
     pub fn page_addr(&self, page: u8) -> *mut u8 {
         let page_size = self.pitch * self.height;
@@ -193,13 +193,20 @@ impl VmwareDriver {
         unsafe { self.fb_base.add(offset as usize) }
     }
 
-    pub fn set_page(&mut self, _page: u8) {
+    pub fn set_page(&mut self, page: u8) {
+        let page_size = self.pitch * self.height;
+        let offset = self.fb_offset + if page == 0 { 0 } else { page_size };
+        self.svga_write(SVGA_REG_FB_OFFSET, offset);
         self.fifo_write_cmd(SVGA_CMD_UPDATE, &[0, 0, self.width, self.height]);
         self.svga_sync();
     }
 
     pub fn update(&mut self, x: u32, y: u32, w: u32, h: u32) {
-        // Queue update without sync — device processes FIFO asynchronously
         self.fifo_write_cmd(SVGA_CMD_UPDATE, &[x, y, w, h]);
+        self.svga_sync();
+    }
+
+    pub fn wait_vsync(&self) {
+        // VMware SVGA uses FIFO commands, no vsync available
     }
 }

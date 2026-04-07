@@ -168,6 +168,7 @@ fn main() -> Status {
         drivers::gpu::gpu_can_flip,
         drivers::gpu::gpu_page_addr,
         drivers::gpu::gpu_set_page,
+        drivers::gpu::gpu_wait_vsync,
     );
     os::ata::ata_init();
 
