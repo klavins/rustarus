@@ -398,6 +398,54 @@ impl Console {
         self.flush_release();
     }
 
+    /// Blit a 24-bit BMP to the framebuffer at (px_x, px_y) in pixel coordinates.
+    /// Advances the cursor past the image.
+    pub fn blit_bmp(&mut self, bmp: &[u8], px_x: u32, px_y: u32) {
+        if bmp.len() < 54 || bmp[0] != b'B' || bmp[1] != b'M' {
+            return;
+        }
+        let data_offset = u32::from_le_bytes([bmp[10], bmp[11], bmp[12], bmp[13]]);
+        let bmp_w = i32::from_le_bytes([bmp[18], bmp[19], bmp[20], bmp[21]]) as u32;
+        let bmp_h = i32::from_le_bytes([bmp[22], bmp[23], bmp[24], bmp[25]]);
+        let bottom_up = bmp_h > 0;
+        let bmp_h = bmp_h.unsigned_abs();
+        let bpp = u16::from_le_bytes([bmp[28], bmp[29]]);
+        if bpp != 24 { return; }
+
+        let src_row_bytes = bmp_w * 3;
+        let src_row_pad = (4 - src_row_bytes % 4) % 4;
+        let src_stride = src_row_bytes + src_row_pad;
+
+        for row in 0..bmp_h {
+            let src_row = if bottom_up { bmp_h - 1 - row } else { row };
+            let src_off = data_offset + src_row * src_stride;
+            let dst_y = px_y + row;
+            if dst_y >= self.fb_height { break; }
+
+            for col in 0..bmp_w {
+                let dst_x = px_x + col;
+                if dst_x >= self.fb_width { break; }
+
+                let si = (src_off + col * 3) as usize;
+                if si + 2 >= bmp.len() { break; }
+                let b = bmp[si] as u32;
+                let g = bmp[si + 1] as u32;
+                let r = bmp[si + 2] as u32;
+                // Skip black pixels (transparent)
+                if r == 0 && g == 0 && b == 0 { continue; }
+                let color = (r << 16) | (g << 8) | b;
+                self.pixel(dst_x, dst_y, color);
+            }
+        }
+
+        // Move cursor below the image
+        let rows_used = (px_y + bmp_h + FONT_H - 1) / FONT_H;
+        if rows_used > self.cursor_row {
+            self.cursor_row = rows_used;
+        }
+        self.flush_all();
+    }
+
     pub fn set_color(&mut self, fg: Color, bg: Color) {
         self.fg_color = COLOR32_MAP[fg as usize];
         self.bg_color = COLOR32_MAP[bg as usize];

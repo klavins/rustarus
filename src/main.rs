@@ -152,9 +152,12 @@ fn main() -> Status {
     let gfx = unsafe { drivers::graphics::GRAPHICS.get() };
     gfx.init(fb_base, shadow, saved_fb, width as u32, height as u32, pitch as u32);
 
-    con.set_color(Color::Green, Color::Black);
+    static LOGO_BMP: &[u8] = include_bytes!("../assets/logo.bmp");
+    con.show_cursor(false);
+    con.blit_bmp(LOGO_BMP, 4, 4);
+
+    con.set_color(Color::White, Color::Black);
     con.print(" UEFI Boot\n");
-    con.set_color(Color::LightCyan, Color::Black);
     con.print(" Display: ");
     basic::value::print_f64(con, width as f64);
     con.print("x");
@@ -174,9 +177,7 @@ fn main() -> Status {
 
     unsafe { os::interrupts::init() };
 
-    con.set_color(Color::LightGray, Color::Black);
     con.print(" RUSTARUS OS v1\n");
-    con.set_color(Color::White, Color::Black);
 
     basic::basic_repl(con)
 }
